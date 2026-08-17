@@ -4,14 +4,14 @@ A reproducible, high-throughput benchmarking and verification suite for [`libbzi
 
 ---
 
-## Datasets
+## Datasets Overview
 
 1. **NOAA NEXRAD Level-2 Radar Data**:
-   - 30 volume archives (~1.5 GB uncompressed, 3.16% compression ratio).
-   - High-throughput binary multi-stream archives.
+   - 30 multi-stream volume archives (~1.5 GB uncompressed, ~45 MB compressed, 3.16% ratio).
+   - Real-world binary radar sweeps containing ~54 concatenated bzip2 streams per volume with 4-byte big-endian headers.
 2. **Canonical Silesia Compression Corpus**:
-   - All 12 un-truncated canonical files (~212 MB uncompressed).
-   - Covers diverse data types: ASCII literature, x86 PE binaries, C source tars, XML markup, medical MRI/X-ray imaging, database records, and PDF.
+   - All 12 un-truncated canonical files (~212 MB uncompressed, ~52 MB compressed).
+   - Covers diverse real-world data types: ASCII literature, x86 binaries, C source tars, XML, medical MRI/X-ray imaging, database records, and PDF.
 
 ---
 
@@ -19,16 +19,31 @@ A reproducible, high-throughput benchmarking and verification suite for [`libbzi
 
 ### 1. Overall Aggregate Throughput
 
-| Dataset | `main` (v0.2.5) | `feature/perf-optimizations` | Throughput Gain |
-| :--- | :--- | :--- | :--- |
-| **NEXRAD Radar Decompression** | 284.28 MB/s | **391.74 MB/s** | **+37.8% 🚀** |
-| **Silesia Corpus Decompression** | 53.50 MB/s | **56.02 MB/s** | **+4.7% 🚀** |
-| **Overall Combined Decompression** | 185.23 MB/s | **224.77 MB/s** | **+21.4% 🚀** |
-| **Overall Combined Compression** | 68.90 MB/s | **70.09 MB/s** | **+1.7%** |
+| Dataset | Metric / Operation | `main` (v0.2.5) | `feature/perf-optimizations` | Throughput Gain |
+| :--- | :--- | :--- | :--- | :--- |
+| **NEXRAD Radar** | Decompression | 284.28 MB/s | **391.74 MB/s** | **+37.8% 🚀** |
+| **NEXRAD Radar** | Compression | 108.18 MB/s | **109.78 MB/s** | **+1.5%** |
+| **Silesia Corpus** | Decompression | 53.50 MB/s | **56.02 MB/s** | **+4.7% 🚀** |
+| **Silesia Corpus** | Compression | 19.32 MB/s | **19.72 MB/s** | **+2.1%** |
+| **Overall Combined** | **Decompression** | 185.23 MB/s | **224.77 MB/s** | **+21.4% 🚀** |
+| **Overall Combined** | **Compression** | 68.90 MB/s | **70.09 MB/s** | **+1.7%** |
 
 ---
 
-### 2. Silesia Per-File & Subtype Breakdown
+### 2. NEXRAD Radar Dataset Details
+
+| Characteristic | Measurement | Notes |
+| :--- | :--- | :--- |
+| **Volume Archives Tested** | 30 volume archives | Full Level-2 radar sweeps (`nexrad1.bz2` – `nexrad30.bz2`) |
+| **Uncompressed Volume per File** | ~47.6 MB – 52.4 MB | ~54 bzip2 streams per file |
+| **Total Uncompressed Size** | **1,428.32 MB** (~1.5 GB) | 28,566.4 MB across 20 benchmark iterations |
+| **Total Compressed Size** | **45.07 MB** | 3.16% compression ratio |
+| **Decompression Speed** | **391.74 MB/s** (vs 284.28 MB/s) | **+37.8% speedup 🚀** (powered by Slice-by-4 parallel CRC32) |
+| **Compression Speed** | **109.78 MB/s** (vs 108.18 MB/s) | **+1.5% speedup** |
+
+---
+
+### 3. Silesia Per-File & Subtype Breakdown
 
 | File Name | Data Type Category | Uncompressed Size | `main` (v0.2.5) Decomp | `feature/perf-optimizations` Decomp | Decompression Speedup |
 | :--- | :--- | :--- | :--- | :--- | :--- |
