@@ -1,0 +1,26 @@
+# Rust / Cargo build outputs
+target/
+**/target/
+Cargo.lock
+
+# Test Data (large binary files, fetched via ./run_benchmark.sh --fetch-data)
+benchmarks/data/
+**/data/
+
+# Benchmark Run Logs & Outputs
+*.log
+*.out
+*.out.*
+perf.data
+perf.data.old
+vgcore.*
+benchmarks/output/
+**/output/
+baseline_*.txt
+benchmarks/baseline_*.txt
+
+# OS & Editor files
+.DS_Store
+.vscode/
+.idea/
+*.swp

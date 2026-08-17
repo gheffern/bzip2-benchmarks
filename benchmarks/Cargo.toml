@@ -1,0 +1,8 @@
+[package]
+name = "bzip2-benchmarks"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+libbz2-rs-sys = { path = "../libbzip2-rs/libbz2-rs-sys" }
+libc = "0.2"
