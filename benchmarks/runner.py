@@ -70,19 +70,23 @@ def format_ab_report(baseline_json, target_json, target_name):
     sil_decomp_d = ((tgt_sil["decomp_mb_s"] - base_sil["decomp_mb_s"]) / base_sil["decomp_mb_s"]) * 100
     sil_comp_d = ((tgt_sil["comp_mb_s"] - base_sil["comp_mb_s"]) / base_sil["comp_mb_s"]) * 100
 
+    def format_speedup(d):
+        icon = " 🚀" if d > 1.0 else ""
+        return f"**{d:+.1f}%{icon}**"
+
     report = []
     report.append(f"# Benchmark A/B Report: `origin/main` vs `{target_name}`\n")
-    report.append("## 1. Aggregate Dataset Throughput\n")
+    report.append("## 1. Overall Aggregate Throughput\n")
     report.append("| Dataset | Operation | Baseline (`main`) | Target (`" + target_name + "`) | Throughput Delta | Speedup |")
     report.append("| :--- | :--- | :--- | :--- | :--- | :--- |")
-    report.append(f"| **NEXRAD Radar** | Decompression | {base_nex['decomp_mb_s']:.2f} MB/s | **{tgt_nex['decomp_mb_s']:.2f} MB/s** | {tgt_nex['decomp_mb_s'] - base_nex['decomp_mb_s']:+.2f} MB/s | **{nex_decomp_d:+.1f}% 🚀** |")
-    report.append(f"| **NEXRAD Radar** | Compression | {base_nex['comp_mb_s']:.2f} MB/s | **{tgt_nex['comp_mb_s']:.2f} MB/s** | {tgt_nex['comp_mb_s'] - base_nex['comp_mb_s']:+.2f} MB/s | **{nex_comp_d:+.1f}%** |")
-    report.append(f"| **Silesia Corpus** | Decompression | {base_sil['decomp_mb_s']:.2f} MB/s | **{tgt_sil['decomp_mb_s']:.2f} MB/s** | {tgt_sil['decomp_mb_s'] - base_sil['decomp_mb_s']:+.2f} MB/s | **{sil_decomp_d:+.1f}% 🚀** |")
-    report.append(f"| **Silesia Corpus** | Compression | {base_sil['comp_mb_s']:.2f} MB/s | **{tgt_sil['comp_mb_s']:.2f} MB/s** | {tgt_sil['comp_mb_s'] - base_sil['comp_mb_s']:+.2f} MB/s | **{sil_comp_d:+.1f}%** |")
+    report.append(f"| **NEXRAD Radar** | Decompression | {base_nex['decomp_mb_s']:.2f} MB/s | **{tgt_nex['decomp_mb_s']:.2f} MB/s** | {tgt_nex['decomp_mb_s'] - base_nex['decomp_mb_s']:+.2f} MB/s | {format_speedup(nex_decomp_d)} |")
+    report.append(f"| **NEXRAD Radar** | Compression | {base_nex['comp_mb_s']:.2f} MB/s | **{tgt_nex['comp_mb_s']:.2f} MB/s** | {tgt_nex['comp_mb_s'] - base_nex['comp_mb_s']:+.2f} MB/s | {format_speedup(nex_comp_d)} |")
+    report.append(f"| **Silesia Corpus** | Decompression | {base_sil['decomp_mb_s']:.2f} MB/s | **{tgt_sil['decomp_mb_s']:.2f} MB/s** | {tgt_sil['decomp_mb_s'] - base_sil['decomp_mb_s']:+.2f} MB/s | {format_speedup(sil_decomp_d)} |")
+    report.append(f"| **Silesia Corpus** | Compression | {base_sil['comp_mb_s']:.2f} MB/s | **{tgt_sil['comp_mb_s']:.2f} MB/s** | {tgt_sil['comp_mb_s'] - base_sil['comp_mb_s']:+.2f} MB/s | {format_speedup(sil_comp_d)} |")
 
-    report.append("\n## 2. Silesia Per-File Breakdown\n")
-    report.append("| File Name | Data Type Category | Size (MB) | Decomp Base | Decomp Target | Decomp Δ% | Comp Base | Comp Target | Comp Δ% |")
-    report.append("| :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- | :--- |")
+    report.append("\n## 2. Silesia Decompression Performance\n")
+    report.append("| File Name | Data Type Category | Size | Baseline (`main`) | Target (`" + target_name + "`) | Speedup |")
+    report.append("| :--- | :--- | :--- | :--- | :--- | :--- |")
 
     base_files = {f["name"]: f for f in baseline_json["silesia_files"]}
     for tf in target_json["silesia_files"]:
@@ -90,11 +94,21 @@ def format_ab_report(baseline_json, target_json, target_name):
         bf = base_files.get(name, tf)
         fname = name.replace("silesia_", "")
         sz = tf["uncomp_bytes"] / 1e6
-
         d_decomp = ((tf["decomp_mb_s"] - bf["decomp_mb_s"]) / bf["decomp_mb_s"]) * 100
-        d_comp = ((tf["comp_mb_s"] - bf["comp_mb_s"]) / bf["comp_mb_s"]) * 100
+        report.append(f"| **`{fname}`** | {tf['type']} | {sz:.2f} MB | {bf['decomp_mb_s']:.2f} MB/s | **{tf['decomp_mb_s']:.2f} MB/s** | {format_speedup(d_decomp)} |")
 
-        report.append(f"| **`{fname}`** | {tf['type']} | {sz:.2f} MB | {bf['decomp_mb_s']:.2f} MB/s | **{tf['decomp_mb_s']:.2f} MB/s** | **{d_decomp:+.1f}%** | {bf['comp_mb_s']:.2f} MB/s | **{tf['comp_mb_s']:.2f} MB/s** | **{d_comp:+.1f}%** |")
+    report.append("\n## 3. Silesia Compression Performance\n")
+    report.append("| File Name | Data Type Category | Size | Ratio | Baseline (`main`) | Target (`" + target_name + "`) | Speedup |")
+    report.append("| :--- | :--- | :--- | :--- | :--- | :--- | :--- |")
+
+    for tf in target_json["silesia_files"]:
+        name = tf["name"]
+        bf = base_files.get(name, tf)
+        fname = name.replace("silesia_", "")
+        sz = tf["uncomp_bytes"] / 1e6
+        ratio = (tf["comp_bytes"] / tf["uncomp_bytes"]) * 100
+        d_comp = ((tf["comp_mb_s"] - bf["comp_mb_s"]) / bf["comp_mb_s"]) * 100
+        report.append(f"| **`{fname}`** | {tf['type']} | {sz:.2f} MB | {ratio:.2f}% | {bf['comp_mb_s']:.2f} MB/s | **{tf['comp_mb_s']:.2f} MB/s** | {format_speedup(d_comp)} |")
 
     return "\n".join(report)
 
@@ -112,7 +126,7 @@ def format_stepped_report(step_results):
         title = s["title"]
         report.append(f"| **{title}** | {j['nexrad']['decomp_mb_s']:.2f} MB/s | {j['nexrad']['comp_mb_s']:.2f} MB/s | {j['silesia_aggregate']['decomp_mb_s']:.2f} MB/s | {j['silesia_aggregate']['comp_mb_s']:.2f} MB/s |")
 
-    report.append("\n## 2. Silesia Per-File Decompression Trajectory (MB/s & Δ vs Main)\n")
+    report.append("\n## 2. Silesia Per-File Decompression Trajectory (MB/s & Total Δ%)\n")
     headers = ["File Name", "Type"]
     for s in step_results:
         headers.append(s["short_title"])
@@ -133,7 +147,8 @@ def format_stepped_report(step_results):
             row.append(f"{v:.2f} MB/s")
 
         total_d = ((final_val - base_val) / base_val) * 100
-        row.append(f"**{total_d:+.1f}%**")
+        icon = "🚀" if total_d > 5.0 else ""
+        row.append(f"**{total_d:+.1f}% {icon}**")
         report.append("| " + " | ".join(row) + " |")
 
     return "\n".join(report)
