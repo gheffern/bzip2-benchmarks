@@ -1,5 +1,5 @@
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::time::Instant;
 use std::ffi::c_char;
 
@@ -192,7 +192,6 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("✓ Loaded {} Silesia files and {} NEXRAD volume archives.\n", silesia_items.len(), nexrad_items.len());
 
     let mut silesia_json = Vec::new();
-    let mut nexrad_json = Vec::new();
 
     // 1. Benchmark NEXRAD
     println!("=== 1. NEXRAD Radar Dataset ({} Iterations) ===", iterations);
