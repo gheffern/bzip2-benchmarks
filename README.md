@@ -15,7 +15,7 @@ A reproducible, high-throughput benchmarking and verification suite for [`libbzi
 
 ---
 
-## Benchmark Results (20 Iterations Steady-State)
+## Benchmark Results (Median Throughput & RSD Variance)
 
 ### Environment & Benchmark Configuration
 
@@ -24,20 +24,21 @@ A reproducible, high-throughput benchmarking and verification suite for [`libbzi
 | **CPU Model** | AMD Ryzen 7 7840HS w/ Radeon 780M Graphics |
 | **OS / Kernel** | Linux 6.12.0-211.47.1.el10_2.x86_64 (x86_64) |
 | **Rust Toolchain** | `rustc 1.97.1 (8bab26f4f 2026-07-14)` |
-| **Iterations per File** | **20 iterations** (~34.2 GB processed) |
+| **Warmup Passes** | **3 un-timed warmup passes** (cache & TLB pre-faulted) |
+| **Benchmark Harness** | **Zero-allocation streaming** (0 heap allocs in timed loops) |
 | **Baseline Ref** | `origin/main` (`v0.2.5` / `f47b114`) |
-| **Target Ref** | `feature/perf-optimizations-v2` (`9852792`) |
+| **Target Ref** | `feature/perf-optimizations-v2` (`6cc9da9`) |
 
 ---
 
-### 1. Overall Aggregate Throughput
+### 1. Overall Aggregate Throughput (Median)
 
 | Dataset | Operation | Baseline (`main` v0.2.5) | Target (`feature/perf-optimizations-v2`) | Throughput Delta | Speedup |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| **NEXRAD Radar** | Decompression | 283.19 MB/s | **390.23 MB/s** | +107.04 MB/s | **+37.8%** |
-| **NEXRAD Radar** | Compression | 112.54 MB/s | **114.10 MB/s** | +1.56 MB/s | **+1.4%** |
-| **Silesia Corpus** | Decompression | 54.73 MB/s | **54.27 MB/s** | -0.46 MB/s | **-0.8%** |
-| **Silesia Corpus** | Compression | 20.76 MB/s | **20.78 MB/s** | +0.02 MB/s | **+0.1%** |
+| **NEXRAD Radar** | Decompression | 322.15 MB/s (±0.3%) | **472.90 MB/s (±0.3%)** | +150.75 MB/s | **+46.8%** |
+| **NEXRAD Radar** | Compression | 110.38 MB/s (±2.5%) | **113.44 MB/s (±1.3%)** | +3.06 MB/s | **+2.8%** |
+| **Silesia Corpus** | Decompression | 53.27 MB/s (±1.0%) | **53.01 MB/s (±1.5%)** | -0.26 MB/s | **-0.5%** |
+| **Silesia Corpus** | Compression | 20.70 MB/s (±0.7%) | **20.30 MB/s (±1.2%)** | -0.40 MB/s | **-1.9%** |
 
 ---
 
@@ -47,29 +48,26 @@ A reproducible, high-throughput benchmarking and verification suite for [`libbzi
 | :--- | :--- | :--- |
 | **Volume Archives Tested** | 30 volume archives | Full Level-2 radar sweeps (`nexrad1.bz2` – `nexrad30.bz2`) |
 | **Uncompressed Volume per File** | ~47.6 MB – 52.4 MB | ~54 bzip2 streams per volume file |
-| **Total Uncompressed Size** | **1,497.70 MB** (~1.5 GB) | 29,953.95 MB across 20 benchmark iterations |
+| **Total Uncompressed Size** | **1,497.70 MB** (~1.5 GB) | Continuous in-memory zero-allocation streaming |
 | **Total Compressed Size** | **45.07 MB** | 3.16% compression ratio |
-| **Decompression Speed** | **390.23 MB/s** (vs 283.19 MB/s) | **+37.8% speedup (+107 MB/s)** (Slice-by-4 parallel CRC32) |
-| **Compression Speed** | **114.10 MB/s** (vs 112.54 MB/s) | **+1.4% speedup** |
+| **Decompression Speed** | **472.90 MB/s** (vs 322.15 MB/s) | **+46.8% speedup (+150.75 MB/s)** (Slice-by-4 CRC32 & small RLE fast-path) |
+| **Compression Speed** | **113.44 MB/s** (vs 110.38 MB/s) | **+2.8% speedup** |
 
 ---
 
-### 3. Silesia Corpus Decompression Breakdown
+### 3. Silesia Corpus Decompression Breakdown (Median)
 
 | File Name | Data Type Category | Size | Baseline (`main` v0.2.5) | Target (`v2`) | Speedup |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| **`webster`** | English Dictionary Text | 41.46 MB | 52.42 MB/s | **54.44 MB/s** | **+3.9%** |
-| **`sao`** | Astronomical Star Catalog | 7.25 MB | 33.70 MB/s | **34.50 MB/s** | **+2.4%** |
-| **`ooffice`** | x86 Executable / DLL | 6.15 MB | 40.73 MB/s | **41.39 MB/s** | **+1.6%** |
-| **`samba`** | Tar / C Source Code | 21.61 MB | 67.90 MB/s | **68.97 MB/s** | **+1.6%** |
-| **`osdb`** | DB Binary Records | 10.09 MB | 48.04 MB/s | **48.77 MB/s** | **+1.5%** |
-| **`reymont`** | PDF Document | 6.63 MB | 54.63 MB/s | **55.17 MB/s** | **+1.0%** |
-| **`x-ray`** | Medical (X-Ray Image) | 8.47 MB | 41.67 MB/s | **41.93 MB/s** | **+0.6%** |
-| **`dickens`** | Text (ASCII Literature) | 10.19 MB | 45.51 MB/s | **45.74 MB/s** | **+0.5%** |
-| **`xml`** | Structured XML Markup | 5.35 MB | 87.15 MB/s | **86.73 MB/s** | **-0.5%** |
-| **`nci`** | Chemistry Database / Text | 33.55 MB | 76.14 MB/s | **75.57 MB/s** | **-0.7%** |
-| **`mozilla`** | Tar / Executables | 51.22 MB | 52.14 MB/s | **49.81 MB/s** | **-4.5%** |
-| **`mr`** | Medical (MRI Image) | 9.97 MB | 64.84 MB/s | **53.69 MB/s** | **-17.2%** |
+| **`mozilla`** | Tar / Executables | 51.22 MB | 45.24 MB/s (±2.2%) | **54.48 MB/s (±4.4%)** | **+20.4%** |
+| **`x-ray`** | Medical (X-Ray Image) | 8.47 MB | 36.05 MB/s (±10.0%) | **42.80 MB/s (±3.0%)** | **+18.7%** |
+| **`mr`** | Medical (MRI Image) | 9.97 MB | 65.63 MB/s (±2.0%) | **68.93 MB/s (±5.0%)** | **+5.0%** |
+| **`samba`** | Tar / C Source Code | 21.61 MB | 69.78 MB/s (±6.5%) | **73.08 MB/s (±1.6%)** | **+4.7%** |
+| **`ooffice`** | x86 Executable / DLL | 6.15 MB | 41.02 MB/s (±7.5%) | **42.33 MB/s (±3.7%)** | **+3.2%** |
+| **`reymont`** | PDF Document | 6.63 MB | 54.26 MB/s (±3.6%) | **55.74 MB/s (±3.2%)** | **+2.7%** |
+| **`dickens`** | Text (ASCII Literature) | 10.19 MB | 45.74 MB/s (±4.9%) | **46.92 MB/s (±2.6%)** | **+2.6%** |
+| **`nci`** | Chemistry Database / Text | 33.55 MB | 81.70 MB/s (±2.2%) | **80.86 MB/s (±16.4%)** | **-1.0%** |
+| **`xml`** | Structured XML Markup | 5.35 MB | 83.67 MB/s (±7.4%) | **78.21 MB/s (±8.5%)** | **-6.5%** |
 
 ---
 
