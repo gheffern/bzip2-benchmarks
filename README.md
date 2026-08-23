@@ -189,7 +189,7 @@ Downloads the official canonical Silesia ZIP and NOAA AWS S3 radar sweeps, valid
 ## Requirements
 
 - **Rust & Cargo**: Any stable Rust toolchain (via [rustup.rs](https://rustup.rs))
-- **Python 3**: Standard library only (no pip dependencies required)
+- **Python 3** (Optional): Standard library only (`urllib`, `hashlib`), required exclusively for the one-time dataset downloader (`./run_benchmark.sh --fetch-data`). All benchmark execution is **100% Pure Rust**.
 - **Standard C Compiler**: `gcc`, `clang`, or `cc` (for standard library linking)
 
 ---
