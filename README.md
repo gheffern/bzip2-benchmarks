@@ -71,18 +71,67 @@ A high-precision, reproducible, zero-allocation benchmarking and verification su
 
 ---
 
-## Benchmark Methodology & Architecture
+## Experimental Rigor: Eliminating Measurement Noise & Systematic Biases
 
-1. **Persistent Zero-Allocation IPC Worker Protocol**:
-   * Both Baseline and Target binaries are launched once as persistent worker processes.
-   * All datasets and pre-allocated working buffers (64 MB) are pre-faulted into physical RAM, completely eliminating page allocation jitter, TLB shootdowns, and ASLR layout variances.
-2. **True Iteration-by-Iteration Interleaving ($B_1 \leftrightarrow T_1$)**:
-   * Alternates execution on every single iteration.
-   * Symmetrized with **Alternating Start Orders**: even passes execute $B_k \to T_k$, odd passes execute $T_k \to B_k$, guaranteeing $\mathbb{E}[\Delta f_{\text{thermal}}] \equiv 0$.
-3. **Core Pinning**:
-   * Pinned strictly to CPU Core 2 via `sched_setaffinity` to eliminate OS thread-migration latency.
-4. **Non-Parametric Outlier Robustness (MAD%)**:
-   * Reports Median Throughput and Median Absolute Deviation ($\text{MAD\%} = \frac{1.4826 \times \text{MAD}}{\text{median}} \times 100$), providing robust dispersion tracking without distortion from OS context switches.
+Benchmarking microarchitectural optimizations on modern out-of-order processors requires controlling for thermal step-down, memory subsystem jitter, OS scheduling artifacts, and compiler heuristics. This harness eliminates noise through five structural controls:
+
+```
+                  ┌─────────────────────────────────────────────────────────┐
+                  │          True Interleaved IPC Orchestrator              │
+                  └────────────┬──────────────────────────────┬─────────────┘
+                               │                              │
+               Pass 2k (Even): │ B ──> T      Pass 2k+1 (Odd):│ T ──> B
+                               ▼                              ▼
+                 ┌───────────────────────────┐  ┌───────────────────────────┐
+                 │  Worker [Baseline Process]│  │   Worker [Target Process] │
+                 │  - Pre-faulted in RAM     │  │  - Pre-faulted in RAM     │
+                 │  - Core 2 Pinned          │  │  - Core 2 Pinned          │
+                 │  - 0 Runtime Allocations  │  │  - 0 Runtime Allocations  │
+                 └───────────────────────────┘  └───────────────────────────┘
+```
+
+---
+
+### 1. Thermal Drift & CPU Turbo Frequency Compensation
+* **The Noise Mechanism**: Modern processors (AMD Precision Boost 2 / Intel Turbo Boost) dynamically adjust core clock frequency based on instantaneous silicon junction temperature ($T_j$) and power dissipation. Executing all Baseline iterations followed by all Target iterations creates an asymmetric thermal penalty against whichever binary runs second.
+* **Our Solution (Alternating Interleaved Schedule)**:
+  * Decompression alternates on every single individual iteration ($B_1 \leftrightarrow T_1, B_2 \leftrightarrow T_2, \dots$).
+  * Symmetrized with **Alternating Start Orders**: Even iterations run $B_k \to T_k$, odd iterations run $T_k \to B_k$, mathematically ensuring zero thermal advantage:
+    $$\mathbb{E}[\Delta f_{\text{thermal}}] \equiv 0$$
+
+---
+
+### 2. Elimination of OS Page Faults & Virtual Memory Jitter
+* **The Noise Mechanism**: Spawning a fresh CLI process per iteration forces the Linux kernel to allocate memory via lazy `mmap`. The first access to destination buffers incurs hundreds of minor page table faults, cold Translation Lookaside Buffer (TLB) misses, and non-deterministic ASLR cache-line alignments.
+* **Our Solution (Persistent Zero-Allocation IPC Workers)**:
+  * Both Baseline and Target binaries are spawned **once** at harness startup as long-lived worker processes.
+  * All 12 Silesia files, 30 NOAA radar volumes, and 64 MB working buffers are pre-faulted (`fill(0)`) into physical RAM frames before any measurement begins.
+  * Timed loops execute with **0 heap allocations, 0 system calls, and 0 kernel page table traps**.
+
+---
+
+### 3. Elimination of OS Thread Migration Latency
+* **The Noise Mechanism**: The Linux Completely Fair Scheduler (CFS) periodically migrates active threads across different CPU cores and CCX complexes, causing catastrophic L1/L2 instruction and data cache evictions.
+* **Our Solution (CPU Affinity Pinning)**:
+  * Both worker processes bind strictly to a single physical core (`Core 2`) via `libc::sched_setaffinity`.
+  * Guarantees 100% cache-warm steady-state execution across the entire test suite.
+
+---
+
+### 4. Surgical Timing Boundaries & Dead-Code Elimination Prevention
+* **The Noise Mechanism**: Measuring timing around process lifecycle or JSON IPC introduces measurement artifacts. Over-aggressive compiler optimizations can also discard unreferenced output buffers.
+* **Our Solution**:
+  * `Instant::now()` calls are placed strictly around the C/Rust decompression function invocation (`bzDecompress`). IPC protocol message framing and serialization execute strictly outside the timed window.
+  * Output buffer pointers and byte counts are wrapped in `std::hint::black_box` to prevent compiler dead-code elimination.
+
+---
+
+### 5. Outlier-Robust Statistical Modeling (Median & MAD%)
+* **The Noise Mechanism**: Standard deviation and Relative Standard Deviation (RSD%) assume normal distributions and are easily distorted by occasional OS interrupts or hardware background ticks.
+* **Our Solution (Non-Parametric Median Absolute Deviation)**:
+  * We report **Median Throughput** and **Normalized Median Absolute Deviation (MAD%)**:
+    $$\text{MAD} = \text{median}(|x_i - \text{median}(X)|), \quad \text{MAD\%} = \frac{1.4826 \times \text{MAD}}{\text{median}(X)} \times 100$$
+  * Provides mathematically rigorous dispersion tracking that rejects OS context-switch spikes without altering the underlying data.
 
 ---
 
