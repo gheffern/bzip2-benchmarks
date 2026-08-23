@@ -41,7 +41,7 @@ pub fn compute_stats(mut samples: Vec<f64>) -> Stats {
     samples.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
     let n = samples.len();
 
-    let median = if n.is_multiple_of(2) {
+    let median = if n % 2 == 0 {
         (samples[n / 2 - 1] + samples[n / 2]) / 2.0
     } else {
         samples[n / 2]
