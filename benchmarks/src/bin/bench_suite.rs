@@ -210,6 +210,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
     let mut iterations = 20;
     let mut json_out: Option<String> = None;
+    let mut file_filter: Option<String> = None;
+    let mut nexrad_only = false;
+    let mut silesia_only = false;
 
     let mut i = 1;
     while i < args.len() {
@@ -219,6 +222,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         } else if args[i] == "--json" && i + 1 < args.len() {
             json_out = Some(args[i + 1].clone());
             i += 2;
+        } else if args[i] == "--file" && i + 1 < args.len() {
+            file_filter = Some(args[i + 1].clone());
+            i += 2;
+        } else if args[i] == "--nexrad-only" {
+            nexrad_only = true;
+            i += 1;
+        } else if args[i] == "--silesia-only" {
+            silesia_only = true;
+            i += 1;
         } else if !args[i].starts_with("--") && json_out.is_none() {
             json_out = Some(args[i].clone());
             i += 1;
@@ -231,8 +243,19 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let ref_dir = Path::new("data/reference");
 
     println!("Loading test datasets into memory & pre-flight validating...");
-    let silesia_items = load_dataset(ref_dir, comp_dir, SILESIA_FILES)?;
-    let nexrad_items = load_nexrad(ref_dir, comp_dir)?;
+    let mut silesia_items = load_dataset(ref_dir, comp_dir, SILESIA_FILES)?;
+    let mut nexrad_items = load_nexrad(ref_dir, comp_dir)?;
+
+    if let Some(ref filter) = file_filter {
+        let f_clean = filter.replace("silesia_", "");
+        silesia_items.retain(|it| it.name == *filter || it.name.replace("silesia_", "") == f_clean);
+        nexrad_items.clear();
+    } else if nexrad_only {
+        silesia_items.clear();
+    } else if silesia_only {
+        nexrad_items.clear();
+    }
+
     println!("✓ Loaded {} Silesia files and {} NEXRAD volume archives.\n", silesia_items.len(), nexrad_items.len());
 
     // Pre-allocate maximum reusable working buffers outside all timers (0 allocations inside timed loops)
@@ -246,13 +269,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     // =========================================================================
     // 1. Benchmark NEXRAD Radar Dataset
     // =========================================================================
-    println!("=== 1. NEXRAD Radar Dataset ({} Iterations + {} Warmup) ===", iterations, WARMUP_ITERATIONS);
+    let mut nexrad_decomp_stats = Stats { median: 0.0, mean: 0.0, min: 0.0, max: 0.0, rsd_pct: 0.0 };
+    let mut nexrad_comp_stats = Stats { median: 0.0, mean: 0.0, min: 0.0, max: 0.0, rsd_pct: 0.0 };
     let mut nexrad_uncomp_bytes = 0usize;
     let mut nexrad_comp_bytes = 0usize;
-    for item in &nexrad_items {
-        nexrad_uncomp_bytes += item.uncompressed.len();
-        nexrad_comp_bytes += item.compressed.len();
-    }
+
+    if !nexrad_items.is_empty() {
+        println!("=== 1. NEXRAD Radar Dataset ({} Iterations + {} Warmup) ===", iterations, WARMUP_ITERATIONS);
+        for item in &nexrad_items {
+            nexrad_uncomp_bytes += item.uncompressed.len();
+            nexrad_comp_bytes += item.compressed.len();
+        }
 
     // Warmup decompression (un-timed)
     for _ in 0..WARMUP_ITERATIONS {
@@ -274,7 +301,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let mb_s = (nexrad_uncomp_bytes as f64 / 1_000_000.0) / elapsed;
         nexrad_decomp_samples.push(mb_s);
     }
-    let nexrad_decomp_stats = compute_stats(nexrad_decomp_samples);
+    nexrad_decomp_stats = compute_stats(nexrad_decomp_samples);
 
     // Warmup compression (un-timed)
     for _ in 0..WARMUP_ITERATIONS {
@@ -296,94 +323,101 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let mb_s = (nexrad_uncomp_bytes as f64 / 1_000_000.0) / elapsed;
         nexrad_comp_samples.push(mb_s);
     }
-    let nexrad_comp_stats = compute_stats(nexrad_comp_samples);
+    nexrad_comp_stats = compute_stats(nexrad_comp_samples);
 
     let nexrad_mb_per_iter = nexrad_uncomp_bytes as f64 / 1_000_000.0;
-    println!("NEXRAD Decompression: {:.2} MB/pass | Median: {:.2} MB/s (±{:.1}%) [Min: {:.2}, Max: {:.2}]",
-             nexrad_mb_per_iter, nexrad_decomp_stats.median, nexrad_decomp_stats.rsd_pct, nexrad_decomp_stats.min, nexrad_decomp_stats.max);
-    println!("NEXRAD Compression:   {:.2} MB/pass | Median: {:.2} MB/s (±{:.1}%) [Min: {:.2}, Max: {:.2}]",
-             nexrad_mb_per_iter, nexrad_comp_stats.median, nexrad_comp_stats.rsd_pct, nexrad_comp_stats.min, nexrad_comp_stats.max);
+        println!("NEXRAD Decompression: {:.2} MB/pass | Median: {:.2} MB/s (±{:.1}%) [Min: {:.2}, Max: {:.2}]",
+                 nexrad_mb_per_iter, nexrad_decomp_stats.median, nexrad_decomp_stats.rsd_pct, nexrad_decomp_stats.min, nexrad_decomp_stats.max);
+        println!("NEXRAD Compression:   {:.2} MB/pass | Median: {:.2} MB/s (±{:.1}%) [Min: {:.2}, Max: {:.2}]",
+                 nexrad_mb_per_iter, nexrad_comp_stats.median, nexrad_comp_stats.rsd_pct, nexrad_comp_stats.min, nexrad_comp_stats.max);
+    }
 
     // =========================================================================
     // 2. Benchmark Silesia Corpus Dataset
     // =========================================================================
-    println!("\n=== 2. Silesia Corpus Dataset ({} Iterations + {} Warmup) ===", iterations, WARMUP_ITERATIONS);
-    println!("{:<18} | {:<16} | {:>10} | {:>8} | {:>16} | {:>16}", 
-             "File", "Type", "Uncomp MB", "Ratio", "Decomp Median", "Compress Median");
-    println!("{:-<18}-|-{:-<16}-|-{:->10}-|-{:->8}-|-{:->16}-|-{:->16}", 
-             "", "", "", "", "", "");
-
     let mut silesia_uncomp_total = 0usize;
     let mut silesia_comp_total = 0usize;
     let mut silesia_json_entries = Vec::new();
     let mut silesia_agg_decomp_samples = vec![0.0f64; iterations];
     let mut silesia_agg_comp_samples = vec![0.0f64; iterations];
+    let mut silesia_agg_decomp_stats = Stats { median: 0.0, mean: 0.0, min: 0.0, max: 0.0, rsd_pct: 0.0 };
+    let mut silesia_agg_comp_stats = Stats { median: 0.0, mean: 0.0, min: 0.0, max: 0.0, rsd_pct: 0.0 };
 
-    for item in &silesia_items {
-        silesia_uncomp_total += item.uncompressed.len();
-        silesia_comp_total += item.compressed.len();
-        let item_mb = item.uncompressed.len() as f64 / 1_000_000.0;
+    if !silesia_items.is_empty() {
+        println!("\n=== 2. Silesia Corpus Dataset ({} Iterations + {} Warmup) ===", iterations, WARMUP_ITERATIONS);
+        println!("{:<18} | {:<16} | {:>10} | {:>8} | {:>16} | {:>16}", 
+                 "File", "Type", "Uncomp MB", "Ratio", "Decomp Median", "Compress Median");
+        println!("{:-<18}-|-{:-<16}-|-{:->10}-|-{:->8}-|-{:->16}-|-{:->16}", 
+                 "", "", "", "", "", "");
 
-        // Warmup decompression
-        for _ in 0..WARMUP_ITERATIONS {
-            let len = decompress_bz2_single_into(&item.compressed, &mut decomp_work_buf).unwrap();
-            std::hint::black_box(&decomp_work_buf[..len]);
+        for item in &silesia_items {
+            silesia_uncomp_total += item.uncompressed.len();
+            silesia_comp_total += item.compressed.len();
+            let item_mb = item.uncompressed.len() as f64 / 1_000_000.0;
+
+            // Warmup decompression
+            for _ in 0..WARMUP_ITERATIONS {
+                let len = decompress_bz2_single_into(&item.compressed, &mut decomp_work_buf).unwrap();
+                std::hint::black_box(&decomp_work_buf[..len]);
+            }
+
+            // Timed decompression iterations
+            let mut file_decomp_samples = Vec::with_capacity(iterations);
+            for iter_idx in 0..iterations {
+                let t0 = Instant::now();
+                let len = decompress_bz2_single_into(&item.compressed, &mut decomp_work_buf).unwrap();
+                std::hint::black_box(&decomp_work_buf[..len]);
+                let elapsed = t0.elapsed().as_secs_f64();
+                file_decomp_samples.push(item_mb / elapsed);
+                silesia_agg_decomp_samples[iter_idx] += elapsed;
+            }
+            let file_decomp_stats = compute_stats(file_decomp_samples);
+
+            // Warmup compression
+            for _ in 0..WARMUP_ITERATIONS {
+                let len = compress_bz2_into(&item.uncompressed, &mut comp_work_buf).unwrap();
+                std::hint::black_box(&comp_work_buf[..len]);
+            }
+
+            // Timed compression iterations
+            let mut file_comp_samples = Vec::with_capacity(iterations);
+            for iter_idx in 0..iterations {
+                let t0 = Instant::now();
+                let len = compress_bz2_into(&item.uncompressed, &mut comp_work_buf).unwrap();
+                std::hint::black_box(&comp_work_buf[..len]);
+                let elapsed = t0.elapsed().as_secs_f64();
+                file_comp_samples.push(item_mb / elapsed);
+                silesia_agg_comp_samples[iter_idx] += elapsed;
+            }
+            let file_comp_stats = compute_stats(file_comp_samples);
+
+            let ratio = (item.compressed.len() as f64 / item.uncompressed.len() as f64) * 100.0;
+
+            println!("{:<18} | {:<16} | {:>9.2}M | {:>7.2}% | {:>9.2} M/s (±{:.1}%) | {:>9.2} M/s (±{:.1}%)",
+                     item.name, item.file_type, item_mb, ratio,
+                     file_decomp_stats.median, file_decomp_stats.rsd_pct,
+                     file_comp_stats.median, file_comp_stats.rsd_pct);
+
+            silesia_json_entries.push(format!(
+                "{{\"name\":\"{}\",\"type\":\"{}\",\"uncomp_bytes\":{},\"comp_bytes\":{},\"decomp_mb_s\":{:.2},\"decomp_rsd\":{:.2},\"comp_mb_s\":{:.2},\"comp_rsd\":{:.2}}}",
+                item.name, item.file_type, item.uncompressed.len(), item.compressed.len(),
+                file_decomp_stats.median, file_decomp_stats.rsd_pct,
+                file_comp_stats.median, file_comp_stats.rsd_pct
+            ));
         }
 
-        // Timed decompression iterations
-        let mut file_decomp_samples = Vec::with_capacity(iterations);
-        for iter_idx in 0..iterations {
-            let t0 = Instant::now();
-            let len = decompress_bz2_single_into(&item.compressed, &mut decomp_work_buf).unwrap();
-            std::hint::black_box(&decomp_work_buf[..len]);
-            let elapsed = t0.elapsed().as_secs_f64();
-            file_decomp_samples.push(item_mb / elapsed);
-            silesia_agg_decomp_samples[iter_idx] += elapsed;
+        let silesia_total_mb = silesia_uncomp_total as f64 / 1_000_000.0;
+        let silesia_agg_decomp_throughput: Vec<f64> = silesia_agg_decomp_samples.iter().map(|elapsed| silesia_total_mb / elapsed).collect();
+        let silesia_agg_comp_throughput: Vec<f64> = silesia_agg_comp_samples.iter().map(|elapsed| silesia_total_mb / elapsed).collect();
+
+        silesia_agg_decomp_stats = compute_stats(silesia_agg_decomp_throughput);
+        silesia_agg_comp_stats = compute_stats(silesia_agg_comp_throughput);
+
+        if silesia_items.len() > 1 {
+            println!("\nSilesia Aggregate Decompression: Median {:.2} MB/s (±{:.1}%)", silesia_agg_decomp_stats.median, silesia_agg_decomp_stats.rsd_pct);
+            println!("Silesia Aggregate Compression:   Median {:.2} MB/s (±{:.1}%)", silesia_agg_comp_stats.median, silesia_agg_comp_stats.rsd_pct);
         }
-        let file_decomp_stats = compute_stats(file_decomp_samples);
-
-        // Warmup compression
-        for _ in 0..WARMUP_ITERATIONS {
-            let len = compress_bz2_into(&item.uncompressed, &mut comp_work_buf).unwrap();
-            std::hint::black_box(&comp_work_buf[..len]);
-        }
-
-        // Timed compression iterations
-        let mut file_comp_samples = Vec::with_capacity(iterations);
-        for iter_idx in 0..iterations {
-            let t0 = Instant::now();
-            let len = compress_bz2_into(&item.uncompressed, &mut comp_work_buf).unwrap();
-            std::hint::black_box(&comp_work_buf[..len]);
-            let elapsed = t0.elapsed().as_secs_f64();
-            file_comp_samples.push(item_mb / elapsed);
-            silesia_agg_comp_samples[iter_idx] += elapsed;
-        }
-        let file_comp_stats = compute_stats(file_comp_samples);
-
-        let ratio = (item.compressed.len() as f64 / item.uncompressed.len() as f64) * 100.0;
-
-        println!("{:<18} | {:<16} | {:>9.2}M | {:>7.2}% | {:>9.2} M/s (±{:.1}%) | {:>9.2} M/s (±{:.1}%)",
-                 item.name, item.file_type, item_mb, ratio,
-                 file_decomp_stats.median, file_decomp_stats.rsd_pct,
-                 file_comp_stats.median, file_comp_stats.rsd_pct);
-
-        silesia_json_entries.push(format!(
-            "{{\"name\":\"{}\",\"type\":\"{}\",\"uncomp_bytes\":{},\"comp_bytes\":{},\"decomp_mb_s\":{:.2},\"decomp_rsd\":{:.2},\"comp_mb_s\":{:.2},\"comp_rsd\":{:.2}}}",
-            item.name, item.file_type, item.uncompressed.len(), item.compressed.len(),
-            file_decomp_stats.median, file_decomp_stats.rsd_pct,
-            file_comp_stats.median, file_comp_stats.rsd_pct
-        ));
     }
-
-    let silesia_total_mb = silesia_uncomp_total as f64 / 1_000_000.0;
-    let silesia_agg_decomp_throughput: Vec<f64> = silesia_agg_decomp_samples.iter().map(|elapsed| silesia_total_mb / elapsed).collect();
-    let silesia_agg_comp_throughput: Vec<f64> = silesia_agg_comp_samples.iter().map(|elapsed| silesia_total_mb / elapsed).collect();
-
-    let silesia_agg_decomp_stats = compute_stats(silesia_agg_decomp_throughput);
-    let silesia_agg_comp_stats = compute_stats(silesia_agg_comp_throughput);
-
-    println!("\nSilesia Aggregate Decompression: Median {:.2} MB/s (±{:.1}%)", silesia_agg_decomp_stats.median, silesia_agg_decomp_stats.rsd_pct);
-    println!("Silesia Aggregate Compression:   Median {:.2} MB/s (±{:.1}%)", silesia_agg_comp_stats.median, silesia_agg_comp_stats.rsd_pct);
 
     // Save JSON if requested
     if let Some(path) = json_out {
