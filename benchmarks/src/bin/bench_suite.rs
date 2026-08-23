@@ -1,12 +1,15 @@
-//! Low-level benchmark execution worker for individual datasets or files.
+//! Low-level benchmark execution worker & standalone harness.
 
+use std::io::{BufRead, Write};
 use std::path::{Path, PathBuf};
+use bzip2_benchmarks::engine::{
+    pin_to_core, run_comp_nexrad, run_comp_single, run_decomp_nexrad, run_decomp_single,
+    WorkerCommand, WorkerResponse, WARMUP_ITERATIONS,
+};
 use bzip2_benchmarks::{
     benchmark_nexrad, benchmark_single_file, compute_stats, load_nexrad, load_silesia,
-    BenchmarkSuiteReport, DatasetAggregateResult, FileBenchmarkResult, SILESIA_FILES,
-    WARMUP_ITERATIONS,
+    BenchmarkSuiteReport, DatasetAggregateResult, DatasetItem, FileBenchmarkResult, SILESIA_FILES,
 };
-use bzip2_benchmarks::engine::pin_to_core;
 
 #[derive(Debug, Clone)]
 struct CliConfig {
@@ -16,6 +19,7 @@ struct CliConfig {
     nexrad_only: bool,
     silesia_only: bool,
     core_id: usize,
+    worker_mode: bool,
 }
 
 impl CliConfig {
@@ -27,10 +31,14 @@ impl CliConfig {
         let mut nexrad_only = false;
         let mut silesia_only = false;
         let mut core_id = 2;
+        let mut worker_mode = false;
 
         let mut i = 1;
         while i < args.len() {
-            if args[i] == "--iterations" && i + 1 < args.len() {
+            if args[i] == "--worker" {
+                worker_mode = true;
+                i += 1;
+            } else if args[i] == "--iterations" && i + 1 < args.len() {
                 iterations = args[i + 1].parse().unwrap_or(5);
                 i += 2;
             } else if args[i] == "--json" && i + 1 < args.len() {
@@ -63,8 +71,140 @@ impl CliConfig {
             nexrad_only,
             silesia_only,
             core_id,
+            worker_mode,
         }
     }
+}
+
+fn run_worker_loop(
+    silesia_items: &[DatasetItem],
+    nexrad_items: &[DatasetItem],
+    decomp_work_buf: &mut [u8],
+    comp_work_buf: &mut [u8],
+) -> Result<(), Box<dyn std::error::Error>> {
+    let stdin = std::io::stdin();
+    let stdout = std::io::stdout();
+    let mut reader = stdin.lock();
+    let mut writer = stdout.lock();
+
+    // 1. Announce Ready
+    let ready_resp = WorkerResponse::Ready {
+        silesia_count: silesia_items.len(),
+        nexrad_count: nexrad_items.len(),
+    };
+    serde_json::to_writer(&mut writer, &ready_resp)?;
+    writer.write_all(b"\n")?;
+    writer.flush()?;
+
+    let mut line_buf = String::new();
+    loop {
+        line_buf.clear();
+        if reader.read_line(&mut line_buf)? == 0 {
+            break; // EOF
+        }
+        let trimmed = line_buf.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        let cmd: WorkerCommand = match serde_json::from_str(trimmed) {
+            Ok(c) => c,
+            Err(e) => {
+                let err_resp = WorkerResponse::Error {
+                    message: format!("Malformed command: {}", e),
+                };
+                serde_json::to_writer(&mut writer, &err_resp)?;
+                writer.write_all(b"\n")?;
+                writer.flush()?;
+                continue;
+            }
+        };
+
+        match cmd {
+            WorkerCommand::Exit => {
+                break;
+            }
+            WorkerCommand::Warmup { target, op, iterations } => {
+                let res: Result<(), String> = (|| {
+                    if target == "nexrad" {
+                        for _ in 0..iterations {
+                            if op == "decomp" || op == "both" {
+                                run_decomp_nexrad(nexrad_items, decomp_work_buf)?;
+                            }
+                            if op == "comp" || op == "both" {
+                                run_comp_nexrad(nexrad_items, comp_work_buf)?;
+                            }
+                        }
+                    } else {
+                        let item = silesia_items
+                            .iter()
+                            .find(|it| it.name == target || it.name.replace("silesia_", "") == target.replace("silesia_", ""))
+                            .ok_or_else(|| format!("Target file not found: {}", target))?;
+                        for _ in 0..iterations {
+                            if op == "decomp" || op == "both" {
+                                run_decomp_single(item, decomp_work_buf)?;
+                            }
+                            if op == "comp" || op == "both" {
+                                run_comp_single(item, comp_work_buf)?;
+                            }
+                        }
+                    }
+                    Ok(())
+                })();
+
+                let resp = match res {
+                    Ok(()) => WorkerResponse::WarmupDone,
+                    Err(e) => WorkerResponse::Error { message: e },
+                };
+                serde_json::to_writer(&mut writer, &resp)?;
+                writer.write_all(b"\n")?;
+                writer.flush()?;
+            }
+            WorkerCommand::RunIteration { target, op } => {
+                let res: Result<(f64, usize, usize), String> = (|| {
+                    if target == "nexrad" {
+                        let mut uncomp_total = 0;
+                        let mut comp_total = 0;
+                        for it in nexrad_items {
+                            uncomp_total += it.uncompressed.len();
+                            comp_total += it.compressed.len();
+                        }
+                        let elapsed = match op.as_str() {
+                            "decomp" => run_decomp_nexrad(nexrad_items, decomp_work_buf)?,
+                            "comp" => run_comp_nexrad(nexrad_items, comp_work_buf)?,
+                            _ => return Err(format!("Unknown op: {}", op)),
+                        };
+                        Ok((elapsed, uncomp_total, comp_total))
+                    } else {
+                        let item = silesia_items
+                            .iter()
+                            .find(|it| it.name == target || it.name.replace("silesia_", "") == target.replace("silesia_", ""))
+                            .ok_or_else(|| format!("Target file not found: {}", target))?;
+                        let elapsed = match op.as_str() {
+                            "decomp" => run_decomp_single(item, decomp_work_buf)?,
+                            "comp" => run_comp_single(item, comp_work_buf)?,
+                            _ => return Err(format!("Unknown op: {}", op)),
+                        };
+                        Ok((elapsed, item.uncompressed.len(), item.compressed.len()))
+                    }
+                })();
+
+                let resp = match res {
+                    Ok((elapsed_secs, uncomp_bytes, comp_bytes)) => WorkerResponse::IterationSuccess {
+                        elapsed_secs,
+                        uncomp_bytes,
+                        comp_bytes,
+                    },
+                    Err(e) => WorkerResponse::Error { message: e },
+                };
+                serde_json::to_writer(&mut writer, &resp)?;
+                writer.write_all(b"\n")?;
+                writer.flush()?;
+            }
+        }
+    }
+
+    Ok(())
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -74,26 +214,28 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let comp_dir = Path::new("data/compressed");
     let ref_dir = Path::new("data/reference");
 
-    println!("Loading test datasets into memory & pre-flight validating...");
     let mut silesia_items = load_silesia(ref_dir, comp_dir, SILESIA_FILES)?;
     let mut nexrad_items = load_nexrad(ref_dir, comp_dir)?;
 
-    if let Some(ref filter) = config.file_filter {
-        let f_clean = filter.replace("silesia_", "");
-        silesia_items.retain(|it| it.name == *filter || it.name.replace("silesia_", "") == f_clean);
-        nexrad_items.clear();
-    } else if config.nexrad_only {
-        silesia_items.clear();
-    } else if config.silesia_only {
-        nexrad_items.clear();
-    }
+    if !config.worker_mode {
+        println!("Loading test datasets into memory & pre-flight validating...");
+        if let Some(ref filter) = config.file_filter {
+            let f_clean = filter.replace("silesia_", "");
+            silesia_items.retain(|it| it.name == *filter || it.name.replace("silesia_", "") == f_clean);
+            nexrad_items.clear();
+        } else if config.nexrad_only {
+            silesia_items.clear();
+        } else if config.silesia_only {
+            nexrad_items.clear();
+        }
 
-    println!(
-        "✓ Loaded {} Silesia files and {} NEXRAD volume archives (Pinned to Core {}).\n",
-        silesia_items.len(),
-        nexrad_items.len(),
-        config.core_id
-    );
+        println!(
+            "✓ Loaded {} Silesia files and {} NEXRAD volume archives (Pinned to Core {}).\n",
+            silesia_items.len(),
+            nexrad_items.len(),
+            config.core_id
+        );
+    }
 
     // Pre-allocate maximum reusable working buffers outside all timers (0 allocations inside timed loops)
     let max_silesia_uncomp = silesia_items.iter().map(|it| it.uncompressed.len()).max().unwrap_or(64 * 1024 * 1024);
@@ -103,6 +245,15 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut decomp_work_buf = vec![0u8; max_uncomp + 1024 * 1024];
     let mut comp_work_buf = vec![0u8; max_uncomp + (max_uncomp / 100) + 1200];
 
+    // Pre-fault memory pages
+    decomp_work_buf.fill(0);
+    comp_work_buf.fill(0);
+
+    if config.worker_mode {
+        return run_worker_loop(&silesia_items, &nexrad_items, &mut decomp_work_buf, &mut comp_work_buf);
+    }
+
+    // Standalone batch execution mode
     let mut report = BenchmarkSuiteReport {
         nexrad: DatasetAggregateResult::default(),
         silesia_aggregate: DatasetAggregateResult::default(),

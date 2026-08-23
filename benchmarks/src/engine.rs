@@ -1,6 +1,7 @@
 //! Low-level bzip2 decompression & compression routines and zero-allocation execution harness.
 
 use std::time::Instant;
+use serde::{Deserialize, Serialize};
 use crate::dataset::DatasetItem;
 use crate::stats::{compute_stats, Stats};
 
@@ -21,6 +22,41 @@ pub fn pin_to_core(core_id: usize) {
     {
         let _ = core_id;
     }
+}
+
+/// IPC worker command protocol.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "cmd", rename_all = "snake_case")]
+pub enum WorkerCommand {
+    Warmup {
+        target: String,
+        op: String,
+        iterations: usize,
+    },
+    RunIteration {
+        target: String,
+        op: String,
+    },
+    Exit,
+}
+
+/// IPC worker response protocol.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "status", rename_all = "snake_case")]
+pub enum WorkerResponse {
+    Ready {
+        silesia_count: usize,
+        nexrad_count: usize,
+    },
+    WarmupDone,
+    IterationSuccess {
+        elapsed_secs: f64,
+        uncomp_bytes: usize,
+        comp_bytes: usize,
+    },
+    Error {
+        message: String,
+    },
 }
 
 /// Decompress a single bzip2 stream into a caller-provided destination buffer.
@@ -119,7 +155,43 @@ pub fn compress_bz2_into(input: &[u8], output: &mut [u8]) -> Result<usize, Strin
     Ok(dest_len as usize)
 }
 
-/// Execute benchmark on the NEXRAD radar archive collection.
+/// Single-pass decompression for a single dataset item.
+pub fn run_decomp_single(item: &DatasetItem, decomp_work_buf: &mut [u8]) -> Result<f64, String> {
+    let t0 = Instant::now();
+    let len = decompress_bz2_single_into(&item.compressed, decomp_work_buf)?;
+    std::hint::black_box(&decomp_work_buf[..len]);
+    Ok(t0.elapsed().as_secs_f64())
+}
+
+/// Single-pass compression for a single dataset item.
+pub fn run_comp_single(item: &DatasetItem, comp_work_buf: &mut [u8]) -> Result<f64, String> {
+    let t0 = Instant::now();
+    let len = compress_bz2_into(&item.uncompressed, comp_work_buf)?;
+    std::hint::black_box(&comp_work_buf[..len]);
+    Ok(t0.elapsed().as_secs_f64())
+}
+
+/// Single-pass decompression across all NEXRAD multistream archives.
+pub fn run_decomp_nexrad(items: &[DatasetItem], decomp_work_buf: &mut [u8]) -> Result<f64, String> {
+    let t0 = Instant::now();
+    for item in items {
+        let len = decompress_bz2_multistream_into(&item.compressed, decomp_work_buf)?;
+        std::hint::black_box(&decomp_work_buf[..len]);
+    }
+    Ok(t0.elapsed().as_secs_f64())
+}
+
+/// Single-pass compression across all NEXRAD uncompressed files.
+pub fn run_comp_nexrad(items: &[DatasetItem], comp_work_buf: &mut [u8]) -> Result<f64, String> {
+    let t0 = Instant::now();
+    for item in items {
+        let len = compress_bz2_into(&item.uncompressed, comp_work_buf)?;
+        std::hint::black_box(&comp_work_buf[..len]);
+    }
+    Ok(t0.elapsed().as_secs_f64())
+}
+
+/// Standalone batch benchmark on NEXRAD radar archives.
 pub fn benchmark_nexrad(
     items: &[DatasetItem],
     iterations: usize,
@@ -133,54 +205,30 @@ pub fn benchmark_nexrad(
         comp_bytes += item.compressed.len();
     }
 
-    // Warmup decompression (un-timed)
     for _ in 0..WARMUP_ITERATIONS {
-        for item in items {
-            let len = decompress_bz2_multistream_into(&item.compressed, decomp_work_buf).unwrap();
-            std::hint::black_box(&decomp_work_buf[..len]);
-        }
+        let _ = run_decomp_nexrad(items, decomp_work_buf);
     }
-
-    // Timed decompression iterations
     let mut decomp_samples = Vec::with_capacity(iterations);
     for _ in 0..iterations {
-        let t0 = Instant::now();
-        for item in items {
-            let len = decompress_bz2_multistream_into(&item.compressed, decomp_work_buf).unwrap();
-            std::hint::black_box(&decomp_work_buf[..len]);
-        }
-        let elapsed = t0.elapsed().as_secs_f64();
-        let mb_s = (uncomp_bytes as f64 / 1_000_000.0) / elapsed;
-        decomp_samples.push(mb_s);
+        let elapsed = run_decomp_nexrad(items, decomp_work_buf).unwrap();
+        decomp_samples.push((uncomp_bytes as f64 / 1_000_000.0) / elapsed);
     }
     let decomp_stats = compute_stats(decomp_samples);
 
-    // Warmup compression (un-timed)
     for _ in 0..WARMUP_ITERATIONS {
-        for item in items {
-            let len = compress_bz2_into(&item.uncompressed, comp_work_buf).unwrap();
-            std::hint::black_box(&comp_work_buf[..len]);
-        }
+        let _ = run_comp_nexrad(items, comp_work_buf);
     }
-
-    // Timed compression iterations
     let mut comp_samples = Vec::with_capacity(iterations);
     for _ in 0..iterations {
-        let t0 = Instant::now();
-        for item in items {
-            let len = compress_bz2_into(&item.uncompressed, comp_work_buf).unwrap();
-            std::hint::black_box(&comp_work_buf[..len]);
-        }
-        let elapsed = t0.elapsed().as_secs_f64();
-        let mb_s = (uncomp_bytes as f64 / 1_000_000.0) / elapsed;
-        comp_samples.push(mb_s);
+        let elapsed = run_comp_nexrad(items, comp_work_buf).unwrap();
+        comp_samples.push((uncomp_bytes as f64 / 1_000_000.0) / elapsed);
     }
     let comp_stats = compute_stats(comp_samples);
 
     (decomp_stats, comp_stats, uncomp_bytes, comp_bytes)
 }
 
-/// Execute benchmark on a single dataset file.
+/// Standalone batch benchmark on a single file.
 pub fn benchmark_single_file(
     item: &DatasetItem,
     iterations: usize,
@@ -189,39 +237,25 @@ pub fn benchmark_single_file(
 ) -> (Stats, Stats, Vec<f64>, Vec<f64>) {
     let item_mb = item.uncompressed.len() as f64 / 1_000_000.0;
 
-    // Warmup decompression
     for _ in 0..WARMUP_ITERATIONS {
-        let len = decompress_bz2_single_into(&item.compressed, decomp_work_buf).unwrap();
-        std::hint::black_box(&decomp_work_buf[..len]);
+        let _ = run_decomp_single(item, decomp_work_buf);
     }
-
-    // Timed decompression iterations
     let mut decomp_samples = Vec::with_capacity(iterations);
     let mut decomp_times = Vec::with_capacity(iterations);
     for _ in 0..iterations {
-        let t0 = Instant::now();
-        let len = decompress_bz2_single_into(&item.compressed, decomp_work_buf).unwrap();
-        std::hint::black_box(&decomp_work_buf[..len]);
-        let elapsed = t0.elapsed().as_secs_f64();
+        let elapsed = run_decomp_single(item, decomp_work_buf).unwrap();
         decomp_times.push(elapsed);
         decomp_samples.push(item_mb / elapsed);
     }
     let decomp_stats = compute_stats(decomp_samples);
 
-    // Warmup compression
     for _ in 0..WARMUP_ITERATIONS {
-        let len = compress_bz2_into(&item.uncompressed, comp_work_buf).unwrap();
-        std::hint::black_box(&comp_work_buf[..len]);
+        let _ = run_comp_single(item, comp_work_buf);
     }
-
-    // Timed compression iterations
     let mut comp_samples = Vec::with_capacity(iterations);
     let mut comp_times = Vec::with_capacity(iterations);
     for _ in 0..iterations {
-        let t0 = Instant::now();
-        let len = compress_bz2_into(&item.uncompressed, comp_work_buf).unwrap();
-        std::hint::black_box(&comp_work_buf[..len]);
-        let elapsed = t0.elapsed().as_secs_f64();
+        let elapsed = run_comp_single(item, comp_work_buf).unwrap();
         comp_times.push(elapsed);
         comp_samples.push(item_mb / elapsed);
     }

@@ -1,16 +1,18 @@
 //! 100% Pure Rust Iso-Thermal Interleaved A/B Benchmark Orchestrator.
 //!
 //! Hardened with CPU Core Pinning, LTO Release Profiles,
-//! True Statistical Aggregate Distributions, and Median Absolute Deviation (MAD%).
+//! True Iteration-by-Iteration Alternating Start Order (B -> T on even passes, T -> B on odd passes),
+//! Persistent Zero-Allocation IPC Workers, and Exact Empirical Aggregate Distributions.
 
 use std::fs;
+use std::io::{BufRead, BufReader, BufWriter, Write};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
-use bzip2_benchmarks::engine::pin_to_core;
+use std::process::{Child, Command, Stdio};
+use bzip2_benchmarks::engine::{pin_to_core, WorkerCommand, WorkerResponse, WARMUP_ITERATIONS};
 use bzip2_benchmarks::stats::compute_stats;
 use bzip2_benchmarks::{
     render_ab_markdown_report, BenchmarkSuiteReport, DatasetAggregateResult, EnvMetadata,
-    SILESIA_FILES,
+    FileBenchmarkResult, SILESIA_FILES,
 };
 
 struct GitGuard {
@@ -80,8 +82,114 @@ fn build_binary_for_ref(lib_dir: &Path, ref_name: &str, binary_name: &str) -> Re
     Ok(dst)
 }
 
+/// Client handle for managing an IPC worker process.
+struct WorkerClient {
+    name: String,
+    child: Child,
+    writer: BufWriter<std::process::ChildStdin>,
+    reader: BufReader<std::process::ChildStdout>,
+}
+
+impl WorkerClient {
+    fn spawn(name: &str, binary: &Path, core_id: usize) -> Result<Self, Box<dyn std::error::Error>> {
+        let mut child = Command::new(binary)
+            .args(["--worker", "--core", &core_id.to_string()])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .map_err(|e| format!("Failed to spawn worker {}: {}", binary.display(), e))?;
+
+        let stdin = child.stdin.take().ok_or("Failed to open child stdin")?;
+        let stdout = child.stdout.take().ok_or("Failed to open child stdout")?;
+        let mut client = Self {
+            name: name.to_string(),
+            child,
+            writer: BufWriter::new(stdin),
+            reader: BufReader::new(stdout),
+        };
+
+        let mut line = String::new();
+        client.reader.read_line(&mut line)?;
+        let resp: WorkerResponse = serde_json::from_str(&line)
+            .map_err(|e| format!("Invalid ready response from {}: {}. Raw: {:?}", name, e, line))?;
+
+        match resp {
+            WorkerResponse::Ready { silesia_count, nexrad_count } => {
+                println!("✓ Worker [{}] online: {} Silesia files, {} NEXRAD archives resident in memory.", name, silesia_count, nexrad_count);
+            }
+            _ => return Err(format!("Unexpected startup response from {}: {:?}", name, resp).into()),
+        }
+
+        Ok(client)
+    }
+
+    fn warmup(&mut self, target: &str, op: &str, iterations: usize) -> Result<(), Box<dyn std::error::Error>> {
+        let cmd = WorkerCommand::Warmup {
+            target: target.to_string(),
+            op: op.to_string(),
+            iterations,
+        };
+        self.send_cmd(&cmd)?;
+        let resp = self.read_resp()?;
+        match resp {
+            WorkerResponse::WarmupDone => Ok(()),
+            WorkerResponse::Error { message } => Err(format!("Worker {} warmup error: {}", self.name, message).into()),
+            _ => Err(format!("Worker {} unexpected warmup response: {:?}", self.name, resp).into()),
+        }
+    }
+
+    fn run_iteration(&mut self, target: &str, op: &str) -> Result<(f64, usize, usize), Box<dyn std::error::Error>> {
+        let cmd = WorkerCommand::RunIteration {
+            target: target.to_string(),
+            op: op.to_string(),
+        };
+        self.send_cmd(&cmd)?;
+        let resp = self.read_resp()?;
+        match resp {
+            WorkerResponse::IterationSuccess { elapsed_secs, uncomp_bytes, comp_bytes } => {
+                Ok((elapsed_secs, uncomp_bytes, comp_bytes))
+            }
+            WorkerResponse::Error { message } => Err(format!("Worker {} iteration error: {}", self.name, message).into()),
+            _ => Err(format!("Worker {} unexpected iteration response: {:?}", self.name, resp).into()),
+        }
+    }
+
+    fn send_cmd(&mut self, cmd: &WorkerCommand) -> Result<(), Box<dyn std::error::Error>> {
+        let mut json = serde_json::to_string(cmd)?;
+        json.push('\n');
+        self.writer.write_all(json.as_bytes())?;
+        self.writer.flush()?;
+        Ok(())
+    }
+
+    fn read_resp(&mut self) -> Result<WorkerResponse, Box<dyn std::error::Error>> {
+        let mut line = String::new();
+        self.reader.read_line(&mut line)?;
+        if line.is_empty() {
+            return Err(format!("Worker {} terminated unexpectedly (EOF on stdout)", self.name).into());
+        }
+        let resp: WorkerResponse = serde_json::from_str(&line)?;
+        Ok(resp)
+    }
+
+    fn shutdown(mut self) -> Result<(), Box<dyn std::error::Error>> {
+        let _ = self.send_cmd(&WorkerCommand::Exit);
+        let _ = self.child.wait();
+        Ok(())
+    }
+}
+
+impl Drop for WorkerClient {
+    fn drop(&mut self) {
+        let _ = self.send_cmd(&WorkerCommand::Exit);
+        let _ = self.child.kill();
+    }
+}
+
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    pin_to_core(2);
+    const BENCHMARK_CORE_ID: usize = 2;
+    pin_to_core(BENCHMARK_CORE_ID);
 
     let args: Vec<String> = std::env::args().collect();
     let mut iterations = 20usize;
@@ -105,7 +213,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("Active Target Git Ref: {}", target_ref);
     println!("Baseline Git Ref:      {}", baseline_ref);
-    println!("Benchmark Host Core:   Pinned to Physical Core 2");
+    println!("Benchmark Host Core:   Pinned to Physical Core {}", BENCHMARK_CORE_ID);
 
     // 1. One-Time Build Phase
     println!("\n======================================================================");
@@ -114,9 +222,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let baseline_bin = build_binary_for_ref(&lib_dir, baseline_ref, "bench_baseline")?;
     let target_bin = build_binary_for_ref(&lib_dir, &target_ref, "bench_target")?;
 
-    // 2. Iso-Thermal Interleaved Execution Phase
+    // 2. Launch Persistent IPC Workers
     println!("\n======================================================================");
-    println!("2. Running Iso-Thermal Interleaved A/B Benchmark ({} iterations per file)", iterations);
+    println!("2. Initializing Persistent Zero-Allocation IPC Workers");
+    println!("======================================================================");
+    let mut base_worker = WorkerClient::spawn("Baseline", &baseline_bin, BENCHMARK_CORE_ID)?;
+    let mut tgt_worker = WorkerClient::spawn("Target", &target_bin, BENCHMARK_CORE_ID)?;
+
+    // 3. True Iteration-by-Iteration Interleaved Execution
+    println!("\n======================================================================");
+    println!(
+        "3. Running True Interleaved A/B Benchmark ({} iterations per file)",
+        iterations
+    );
+    println!("   Strategy: Alternating Start Order (B->T on even passes, T->B on odd passes)");
     println!("======================================================================");
 
     let mut merged_baseline = BenchmarkSuiteReport {
@@ -131,60 +250,206 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     };
 
     // A. Interleaved NEXRAD Radar Dataset
-    println!("\n>>> Benchmarking NOAA NEXRAD Radar Dataset (Alternating Baseline <-> Target)...");
-    let tmp_base_nex = output_dir.join("tmp_base_nexrad.json");
-    let tmp_tgt_nex = output_dir.join("tmp_tgt_nexrad.json");
+    println!("\n>>> Benchmarking NOAA NEXRAD Radar Dataset (Alternating B <-> T)...");
+    base_worker.warmup("nexrad", "decomp", WARMUP_ITERATIONS)?;
+    tgt_worker.warmup("nexrad", "decomp", WARMUP_ITERATIONS)?;
 
-    let b_status = Command::new(&baseline_bin)
-        .args(["--iterations", &iterations.to_string(), "--nexrad-only", "--json", tmp_base_nex.to_str().unwrap()])
-        .status()?;
-    if !b_status.success() {
-        return Err("Baseline NEXRAD benchmark failed".into());
+    let mut b_nex_decomp_times = vec![0.0f64; iterations];
+    let mut t_nex_decomp_times = vec![0.0f64; iterations];
+    let mut nex_uncomp = 0usize;
+    let mut nex_comp = 0usize;
+
+    for k in 0..iterations {
+        if k % 2 == 0 {
+            let (tb, u, c) = base_worker.run_iteration("nexrad", "decomp")?;
+            let (tt, _, _) = tgt_worker.run_iteration("nexrad", "decomp")?;
+            b_nex_decomp_times[k] = tb;
+            t_nex_decomp_times[k] = tt;
+            nex_uncomp = u;
+            nex_comp = c;
+        } else {
+            let (tt, _, _) = tgt_worker.run_iteration("nexrad", "decomp")?;
+            let (tb, u, c) = base_worker.run_iteration("nexrad", "decomp")?;
+            t_nex_decomp_times[k] = tt;
+            b_nex_decomp_times[k] = tb;
+            nex_uncomp = u;
+            nex_comp = c;
+        }
     }
 
-    let t_status = Command::new(&target_bin)
-        .args(["--iterations", &iterations.to_string(), "--nexrad-only", "--json", tmp_tgt_nex.to_str().unwrap()])
-        .status()?;
-    if !t_status.success() {
-        return Err("Target NEXRAD benchmark failed".into());
+    base_worker.warmup("nexrad", "comp", WARMUP_ITERATIONS)?;
+    tgt_worker.warmup("nexrad", "comp", WARMUP_ITERATIONS)?;
+
+    let mut b_nex_comp_times = vec![0.0f64; iterations];
+    let mut t_nex_comp_times = vec![0.0f64; iterations];
+
+    for k in 0..iterations {
+        if k % 2 == 0 {
+            let (tb, _, _) = base_worker.run_iteration("nexrad", "comp")?;
+            let (tt, _, _) = tgt_worker.run_iteration("nexrad", "comp")?;
+            b_nex_comp_times[k] = tb;
+            t_nex_comp_times[k] = tt;
+        } else {
+            let (tt, _, _) = tgt_worker.run_iteration("nexrad", "comp")?;
+            let (tb, _, _) = base_worker.run_iteration("nexrad", "comp")?;
+            t_nex_comp_times[k] = tt;
+            b_nex_comp_times[k] = tb;
+        }
     }
 
-    let base_nex_rep = BenchmarkSuiteReport::load_json(&tmp_base_nex)?;
-    let tgt_nex_rep = BenchmarkSuiteReport::load_json(&tmp_tgt_nex)?;
-    merged_baseline.nexrad = base_nex_rep.nexrad;
-    merged_target.nexrad = tgt_nex_rep.nexrad;
+    let nex_mb = nex_uncomp as f64 / 1_000_000.0;
+    let b_nex_decomp_stats = compute_stats(b_nex_decomp_times.iter().map(|&t| nex_mb / t).collect());
+    let t_nex_decomp_stats = compute_stats(t_nex_decomp_times.iter().map(|&t| nex_mb / t).collect());
+    let b_nex_comp_stats = compute_stats(b_nex_comp_times.iter().map(|&t| nex_mb / t).collect());
+    let t_nex_comp_stats = compute_stats(t_nex_comp_times.iter().map(|&t| nex_mb / t).collect());
+
+    println!(
+        "NEXRAD Decomp: Base {:.2} MB/s (±{:.1}%) | Tgt {:.2} MB/s (±{:.1}%) -> {:+.1}%",
+        b_nex_decomp_stats.median, b_nex_decomp_stats.mad_pct,
+        t_nex_decomp_stats.median, t_nex_decomp_stats.mad_pct,
+        ((t_nex_decomp_stats.median - b_nex_decomp_stats.median) / b_nex_decomp_stats.median) * 100.0
+    );
+    println!(
+        "NEXRAD Comp:   Base {:.2} MB/s (±{:.1}%) | Tgt {:.2} MB/s (±{:.1}%) -> {:+.1}%",
+        b_nex_comp_stats.median, b_nex_comp_stats.mad_pct,
+        t_nex_comp_stats.median, t_nex_comp_stats.mad_pct,
+        ((t_nex_comp_stats.median - b_nex_comp_stats.median) / b_nex_comp_stats.median) * 100.0
+    );
+
+    merged_baseline.nexrad = DatasetAggregateResult {
+        uncomp_bytes: nex_uncomp,
+        comp_bytes: nex_comp,
+        decomp_mb_s: b_nex_decomp_stats.median,
+        decomp_rsd: b_nex_decomp_stats.rsd_pct,
+        decomp_mad: b_nex_decomp_stats.mad_pct,
+        comp_mb_s: b_nex_comp_stats.median,
+        comp_rsd: b_nex_comp_stats.rsd_pct,
+        comp_mad: b_nex_comp_stats.mad_pct,
+    };
+    merged_target.nexrad = DatasetAggregateResult {
+        uncomp_bytes: nex_uncomp,
+        comp_bytes: nex_comp,
+        decomp_mb_s: t_nex_decomp_stats.median,
+        decomp_rsd: t_nex_decomp_stats.rsd_pct,
+        decomp_mad: t_nex_decomp_stats.mad_pct,
+        comp_mb_s: t_nex_comp_stats.median,
+        comp_rsd: t_nex_comp_stats.rsd_pct,
+        comp_mad: t_nex_comp_stats.mad_pct,
+    };
 
     // B. Interleaved Silesia Corpus Files
-    println!("\n>>> Benchmarking Silesia Corpus Files (Alternating Baseline <-> Target per file)...");
+    println!("\n>>> Benchmarking Silesia Corpus Files (Alternating B <-> T per iteration)...");
+    println!(
+        "{:<16} | {:>14} | {:>14} | {:>8} | {:>14} | {:>14} | {:>8}",
+        "File", "Base Decomp", "Tgt Decomp", "D-Speed", "Base Comp", "Tgt Comp", "C-Speed"
+    );
+    println!("{:-<16}-|-{:->14}-|-{:->14}-|-{:->8}-|-{:->14}-|-{:->14}-|-{:->8}", "", "", "", "", "", "", "");
+
     for f in SILESIA_FILES {
-        println!("\n--- Testing File: {} ---", f.name);
-        let tmp_base_f = output_dir.join(format!("tmp_base_{}.json", f.name));
-        let tmp_tgt_f = output_dir.join(format!("tmp_tgt_{}.json", f.name));
+        let fname = f.name;
 
-        let b_file_status = Command::new(&baseline_bin)
-            .args(["--iterations", &iterations.to_string(), "--file", f.name, "--json", tmp_base_f.to_str().unwrap()])
-            .status()?;
-        if !b_file_status.success() {
-            return Err(format!("Baseline benchmark failed on {}", f.name).into());
+        // Decompression Warmup + Interleaved Passes
+        base_worker.warmup(fname, "decomp", WARMUP_ITERATIONS)?;
+        tgt_worker.warmup(fname, "decomp", WARMUP_ITERATIONS)?;
+
+        let mut b_decomp_times = vec![0.0f64; iterations];
+        let mut t_decomp_times = vec![0.0f64; iterations];
+        let mut file_uncomp = 0usize;
+        let mut file_comp = 0usize;
+
+        for k in 0..iterations {
+            if k % 2 == 0 {
+                let (tb, u, c) = base_worker.run_iteration(fname, "decomp")?;
+                let (tt, _, _) = tgt_worker.run_iteration(fname, "decomp")?;
+                b_decomp_times[k] = tb;
+                t_decomp_times[k] = tt;
+                file_uncomp = u;
+                file_comp = c;
+            } else {
+                let (tt, _, _) = tgt_worker.run_iteration(fname, "decomp")?;
+                let (tb, u, c) = base_worker.run_iteration(fname, "decomp")?;
+                t_decomp_times[k] = tt;
+                b_decomp_times[k] = tb;
+                file_uncomp = u;
+                file_comp = c;
+            }
         }
 
-        let t_file_status = Command::new(&target_bin)
-            .args(["--iterations", &iterations.to_string(), "--file", f.name, "--json", tmp_tgt_f.to_str().unwrap()])
-            .status()?;
-        if !t_file_status.success() {
-            return Err(format!("Target benchmark failed on {}", f.name).into());
+        // Compression Warmup + Interleaved Passes
+        base_worker.warmup(fname, "comp", WARMUP_ITERATIONS)?;
+        tgt_worker.warmup(fname, "comp", WARMUP_ITERATIONS)?;
+
+        let mut b_comp_times = vec![0.0f64; iterations];
+        let mut t_comp_times = vec![0.0f64; iterations];
+
+        for k in 0..iterations {
+            if k % 2 == 0 {
+                let (tb, _, _) = base_worker.run_iteration(fname, "comp")?;
+                let (tt, _, _) = tgt_worker.run_iteration(fname, "comp")?;
+                b_comp_times[k] = tb;
+                t_comp_times[k] = tt;
+            } else {
+                let (tt, _, _) = tgt_worker.run_iteration(fname, "comp")?;
+                let (tb, _, _) = base_worker.run_iteration(fname, "comp")?;
+                t_comp_times[k] = tt;
+                b_comp_times[k] = tb;
+            }
         }
 
-        let bf_rep = BenchmarkSuiteReport::load_json(&tmp_base_f)?;
-        let tf_rep = BenchmarkSuiteReport::load_json(&tmp_tgt_f)?;
+        let f_mb = file_uncomp as f64 / 1_000_000.0;
+        let b_d_stats = compute_stats(b_decomp_times.iter().map(|&t| f_mb / t).collect());
+        let t_d_stats = compute_stats(t_decomp_times.iter().map(|&t| f_mb / t).collect());
+        let b_c_stats = compute_stats(b_comp_times.iter().map(|&t| f_mb / t).collect());
+        let t_c_stats = compute_stats(t_comp_times.iter().map(|&t| f_mb / t).collect());
 
-        if let Some(first_b) = bf_rep.silesia_files.into_iter().next() {
-            merged_baseline.silesia_files.push(first_b);
-        }
-        if let Some(first_t) = tf_rep.silesia_files.into_iter().next() {
-            merged_target.silesia_files.push(first_t);
-        }
+        let d_speedup = ((t_d_stats.median - b_d_stats.median) / b_d_stats.median) * 100.0;
+        let c_speedup = ((t_c_stats.median - b_c_stats.median) / b_c_stats.median) * 100.0;
+
+        let short_name = fname.replace("silesia_", "");
+        println!(
+            "{:<16} | {:>8.2} (±{:.1}%) | {:>8.2} (±{:.1}%) | {:>+7.1}% | {:>8.2} (±{:.1}%) | {:>8.2} (±{:.1}%) | {:>+7.1}%",
+            short_name,
+            b_d_stats.median, b_d_stats.mad_pct,
+            t_d_stats.median, t_d_stats.mad_pct,
+            d_speedup,
+            b_c_stats.median, b_c_stats.mad_pct,
+            t_c_stats.median, t_c_stats.mad_pct,
+            c_speedup
+        );
+
+        merged_baseline.silesia_files.push(FileBenchmarkResult {
+            name: fname.to_string(),
+            category: f.category,
+            uncomp_bytes: file_uncomp,
+            comp_bytes: file_comp,
+            decomp_mb_s: b_d_stats.median,
+            decomp_rsd: b_d_stats.rsd_pct,
+            decomp_mad: b_d_stats.mad_pct,
+            comp_mb_s: b_c_stats.median,
+            comp_rsd: b_c_stats.rsd_pct,
+            comp_mad: b_c_stats.mad_pct,
+            decomp_times: b_decomp_times,
+            comp_times: b_comp_times,
+        });
+
+        merged_target.silesia_files.push(FileBenchmarkResult {
+            name: fname.to_string(),
+            category: f.category,
+            uncomp_bytes: file_uncomp,
+            comp_bytes: file_comp,
+            decomp_mb_s: t_d_stats.median,
+            decomp_rsd: t_d_stats.rsd_pct,
+            decomp_mad: t_d_stats.mad_pct,
+            comp_mb_s: t_c_stats.median,
+            comp_rsd: t_c_stats.rsd_pct,
+            comp_mad: t_c_stats.mad_pct,
+            decomp_times: t_decomp_times,
+            comp_times: t_comp_times,
+        });
     }
+
+    base_worker.shutdown()?;
+    tgt_worker.shutdown()?;
 
     // Compute exact empirical aggregate distribution across all matched iterations (zero hardcoded values)
     let total_uncomp: usize = merged_baseline.silesia_files.iter().map(|f| f.uncomp_bytes).sum();
