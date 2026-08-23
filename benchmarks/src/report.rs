@@ -31,8 +31,14 @@ pub struct FileBenchmarkResult {
     pub comp_bytes: usize,
     pub decomp_mb_s: f64,
     pub decomp_rsd: f64,
+    pub decomp_mad: f64,
     pub comp_mb_s: f64,
     pub comp_rsd: f64,
+    pub comp_mad: f64,
+    #[serde(default)]
+    pub decomp_times: Vec<f64>,
+    #[serde(default)]
+    pub comp_times: Vec<f64>,
 }
 
 /// Aggregate metrics for a dataset collection (e.g. Silesia Aggregate or NEXRAD).
@@ -42,8 +48,10 @@ pub struct DatasetAggregateResult {
     pub comp_bytes: usize,
     pub decomp_mb_s: f64,
     pub decomp_rsd: f64,
+    pub decomp_mad: f64,
     pub comp_mb_s: f64,
     pub comp_rsd: f64,
+    pub comp_mad: f64,
 }
 
 impl Default for DatasetAggregateResult {
@@ -53,8 +61,10 @@ impl Default for DatasetAggregateResult {
             comp_bytes: 0,
             decomp_mb_s: 0.0,
             decomp_rsd: 0.0,
+            decomp_mad: 0.0,
             comp_mb_s: 0.0,
             comp_rsd: 0.0,
+            comp_mad: 0.0,
         }
     }
 }
@@ -157,13 +167,13 @@ pub fn render_ab_markdown_report(
     out.push(format!("| **CPU Model** | {} |", meta.cpu));
     out.push(format!("| **OS / Kernel** | {} |", meta.os));
     out.push(format!("| **Rust Toolchain** | `{}` |", meta.rustc));
-    out.push("| **Execution Methodology** | **Iso-Thermal Interleaved A/B (Zero Thermal Drift)** |".to_string());
-    out.push(format!("| **Iterations per File** | **{} iterations (+ 3 warmup passes)** |", meta.iterations));
+    out.push("| **Execution Methodology** | **Iso-Thermal Interleaved A/B (CPU Pinned to Core 2)** |".to_string());
+    out.push(format!("| **Iterations per File** | **{} iterations (+ 5 warmup passes)** |", meta.iterations));
     out.push(format!("| **Baseline Ref** | `{}` |", meta.baseline));
     out.push(format!("| **Target Ref** | `{}` |\n", meta.target));
 
     // Section 1: Aggregate Throughput
-    out.push("## 1. Overall Aggregate Throughput (Median)\n".to_string());
+    out.push("## 1. Overall Aggregate Throughput (Median ± MAD% Dispersion)\n".to_string());
     out.push(format!("| Dataset | Operation | Baseline (`{}`) | Target (`{}`) | Throughput Delta | Speedup |", meta.baseline, meta.target));
     out.push("| :--- | :--- | :--- | :--- | :--- | :--- |".to_string());
 
@@ -178,28 +188,28 @@ pub fn render_ab_markdown_report(
     let sil_d_comp = safe_delta(t_sil.comp_mb_s, b_sil.comp_mb_s);
 
     out.push(format!(
-        "| **NEXRAD Radar** | {} | {:.2} MB/s (±{:.1}%) | **{:.2} MB/s (±{:.1}%)** | {:+.2} MB/s | {} |",
-        BenchmarkOp::Decompression, b_nex.decomp_mb_s, b_nex.decomp_rsd, t_nex.decomp_mb_s, t_nex.decomp_rsd,
+        "| **NEXRAD Radar** | {} | {:.2} MB/s (±{:.1}% MAD) | **{:.2} MB/s (±{:.1}% MAD)** | {:+.2} MB/s | {} |",
+        BenchmarkOp::Decompression, b_nex.decomp_mb_s, b_nex.decomp_mad, t_nex.decomp_mb_s, t_nex.decomp_mad,
         t_nex.decomp_mb_s - b_nex.decomp_mb_s, format_speedup(nex_d_decomp)
     ));
     out.push(format!(
-        "| **NEXRAD Radar** | {} | {:.2} MB/s (±{:.1}%) | **{:.2} MB/s (±{:.1}%)** | {:+.2} MB/s | {} |",
-        BenchmarkOp::Compression, b_nex.comp_mb_s, b_nex.comp_rsd, t_nex.comp_mb_s, t_nex.comp_rsd,
+        "| **NEXRAD Radar** | {} | {:.2} MB/s (±{:.1}% MAD) | **{:.2} MB/s (±{:.1}% MAD)** | {:+.2} MB/s | {} |",
+        BenchmarkOp::Compression, b_nex.comp_mb_s, b_nex.comp_mad, t_nex.comp_mb_s, t_nex.comp_mad,
         t_nex.comp_mb_s - b_nex.comp_mb_s, format_speedup(nex_d_comp)
     ));
     out.push(format!(
-        "| **Silesia Corpus** | {} | {:.2} MB/s (±{:.1}%) | **{:.2} MB/s (±{:.1}%)** | {:+.2} MB/s | {} |",
-        BenchmarkOp::Decompression, b_sil.decomp_mb_s, b_sil.decomp_rsd, t_sil.decomp_mb_s, t_sil.decomp_rsd,
+        "| **Silesia Corpus** | {} | {:.2} MB/s (±{:.1}% MAD) | **{:.2} MB/s (±{:.1}% MAD)** | {:+.2} MB/s | {} |",
+        BenchmarkOp::Decompression, b_sil.decomp_mb_s, b_sil.decomp_mad, t_sil.decomp_mb_s, t_sil.decomp_mad,
         t_sil.decomp_mb_s - b_sil.decomp_mb_s, format_speedup(sil_d_decomp)
     ));
     out.push(format!(
-        "| **Silesia Corpus** | {} | {:.2} MB/s (±{:.1}%) | **{:.2} MB/s (±{:.1}%)** | {:+.2} MB/s | {} |",
-        BenchmarkOp::Compression, b_sil.comp_mb_s, b_sil.comp_rsd, t_sil.comp_mb_s, t_sil.comp_rsd,
+        "| **Silesia Corpus** | {} | {:.2} MB/s (±{:.1}% MAD) | **{:.2} MB/s (±{:.1}% MAD)** | {:+.2} MB/s | {} |",
+        BenchmarkOp::Compression, b_sil.comp_mb_s, b_sil.comp_mad, t_sil.comp_mb_s, t_sil.comp_mad,
         t_sil.comp_mb_s - b_sil.comp_mb_s, format_speedup(sil_d_comp)
     ));
 
     // Section 2: Silesia Decompression Breakdown
-    out.push("\n## 2. Silesia Decompression Performance (Median)\n".to_string());
+    out.push("\n## 2. Silesia Decompression Performance (Median ± MAD% Dispersion)\n".to_string());
     out.push(format!("| File Name | Data Type Category | Size | Baseline (`{}`) | Target (`{}`) | Speedup |", meta.baseline, meta.target));
     out.push("| :--- | :--- | :--- | :--- | :--- | :--- |".to_string());
 
@@ -210,13 +220,13 @@ pub fn render_ab_markdown_report(
         let d = safe_delta(tf.decomp_mb_s, bf.decomp_mb_s);
 
         out.push(format!(
-            "| **`{}`** | {} | {:.2} MB | {:.2} MB/s (±{:.1}%) | **{:.2} MB/s (±{:.1}%)** | {} |",
-            fname, tf.category, sz, bf.decomp_mb_s, bf.decomp_rsd, tf.decomp_mb_s, tf.decomp_rsd, format_speedup(d)
+            "| **`{}`** | {} | {:.2} MB | {:.2} MB/s (±{:.1}% MAD) | **{:.2} MB/s (±{:.1}% MAD)** | {} |",
+            fname, tf.category, sz, bf.decomp_mb_s, bf.decomp_mad, tf.decomp_mb_s, tf.decomp_mad, format_speedup(d)
         ));
     }
 
     // Section 3: Silesia Compression Breakdown
-    out.push("\n## 3. Silesia Compression Performance (Median)\n".to_string());
+    out.push("\n## 3. Silesia Compression Performance (Median ± MAD% Dispersion)\n".to_string());
     out.push(format!("| File Name | Data Type Category | Size | Ratio | Baseline (`{}`) | Target (`{}`) | Speedup |", meta.baseline, meta.target));
     out.push("| :--- | :--- | :--- | :--- | :--- | :--- | :--- |".to_string());
 
@@ -228,8 +238,8 @@ pub fn render_ab_markdown_report(
         let d = safe_delta(tf.comp_mb_s, bf.comp_mb_s);
 
         out.push(format!(
-            "| **`{}`** | {} | {:.2} MB | {:.2}% | {:.2} MB/s (±{:.1}%) | **{:.2} MB/s (±{:.1}%)** | {} |",
-            fname, tf.category, sz, ratio, bf.comp_mb_s, bf.comp_rsd, tf.comp_mb_s, tf.comp_rsd, format_speedup(d)
+            "| **`{}`** | {} | {:.2} MB | {:.2}% | {:.2} MB/s (±{:.1}% MAD) | **{:.2} MB/s (±{:.1}% MAD)** | {} |",
+            fname, tf.category, sz, ratio, bf.comp_mb_s, bf.comp_mad, tf.comp_mb_s, tf.comp_mad, format_speedup(d)
         ));
     }
 

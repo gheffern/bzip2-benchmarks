@@ -6,6 +6,7 @@ use bzip2_benchmarks::{
     BenchmarkSuiteReport, DatasetAggregateResult, FileBenchmarkResult, SILESIA_FILES,
     WARMUP_ITERATIONS,
 };
+use bzip2_benchmarks::engine::pin_to_core;
 
 #[derive(Debug, Clone)]
 struct CliConfig {
@@ -14,6 +15,7 @@ struct CliConfig {
     file_filter: Option<String>,
     nexrad_only: bool,
     silesia_only: bool,
+    core_id: usize,
 }
 
 impl CliConfig {
@@ -24,6 +26,7 @@ impl CliConfig {
         let mut file_filter = None;
         let mut nexrad_only = false;
         let mut silesia_only = false;
+        let mut core_id = 2;
 
         let mut i = 1;
         while i < args.len() {
@@ -35,6 +38,9 @@ impl CliConfig {
                 i += 2;
             } else if args[i] == "--file" && i + 1 < args.len() {
                 file_filter = Some(args[i + 1].clone());
+                i += 2;
+            } else if args[i] == "--core" && i + 1 < args.len() {
+                core_id = args[i + 1].parse().unwrap_or(2);
                 i += 2;
             } else if args[i] == "--nexrad-only" {
                 nexrad_only = true;
@@ -56,12 +62,15 @@ impl CliConfig {
             file_filter,
             nexrad_only,
             silesia_only,
+            core_id,
         }
     }
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let config = CliConfig::parse_from_args();
+    pin_to_core(config.core_id);
+
     let comp_dir = Path::new("data/compressed");
     let ref_dir = Path::new("data/reference");
 
@@ -80,9 +89,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     println!(
-        "✓ Loaded {} Silesia files and {} NEXRAD volume archives.\n",
+        "✓ Loaded {} Silesia files and {} NEXRAD volume archives (Pinned to Core {}).\n",
         silesia_items.len(),
-        nexrad_items.len()
+        nexrad_items.len(),
+        config.core_id
     );
 
     // Pre-allocate maximum reusable working buffers outside all timers (0 allocations inside timed loops)
@@ -107,12 +117,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         let mb_per_iter = uncomp_bytes as f64 / 1_000_000.0;
         println!(
-            "NEXRAD Decompression: {:.2} MB/pass | Median: {:.2} MB/s (±{:.1}%) [Min: {:.2}, Max: {:.2}]",
-            mb_per_iter, decomp_stats.median, decomp_stats.rsd_pct, decomp_stats.min, decomp_stats.max
+            "NEXRAD Decompression: {:.2} MB/pass | Median: {:.2} MB/s (±{:.1}% MAD) [Min: {:.2}, Max: {:.2}]",
+            mb_per_iter, decomp_stats.median, decomp_stats.mad_pct, decomp_stats.min, decomp_stats.max
         );
         println!(
-            "NEXRAD Compression:   {:.2} MB/pass | Median: {:.2} MB/s (±{:.1}%) [Min: {:.2}, Max: {:.2}]",
-            mb_per_iter, comp_stats.median, comp_stats.rsd_pct, comp_stats.min, comp_stats.max
+            "NEXRAD Compression:   {:.2} MB/pass | Median: {:.2} MB/s (±{:.1}% MAD) [Min: {:.2}, Max: {:.2}]",
+            mb_per_iter, comp_stats.median, comp_stats.mad_pct, comp_stats.min, comp_stats.max
         );
 
         report.nexrad = DatasetAggregateResult {
@@ -120,8 +130,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             comp_bytes,
             decomp_mb_s: decomp_stats.median,
             decomp_rsd: decomp_stats.rsd_pct,
+            decomp_mad: decomp_stats.mad_pct,
             comp_mb_s: comp_stats.median,
             comp_rsd: comp_stats.rsd_pct,
+            comp_mad: comp_stats.mad_pct,
         };
     }
 
@@ -148,18 +160,22 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 benchmark_single_file(item, config.iterations, &mut decomp_work_buf, &mut comp_work_buf);
 
             for (idx, &t) in decomp_times.iter().enumerate() {
-                silesia_agg_decomp_times[idx] += t;
+                if idx < silesia_agg_decomp_times.len() {
+                    silesia_agg_decomp_times[idx] += t;
+                }
             }
             for (idx, &t) in comp_times.iter().enumerate() {
-                silesia_agg_comp_times[idx] += t;
+                if idx < silesia_agg_comp_times.len() {
+                    silesia_agg_comp_times[idx] += t;
+                }
             }
 
             let ratio = (item.compressed.len() as f64 / item.uncompressed.len() as f64) * 100.0;
             println!(
                 "{:<18} | {:<16} | {:>9.2}M | {:>7.2}% | {:>9.2} M/s (±{:.1}%) | {:>9.2} M/s (±{:.1}%)",
                 item.name, item.category, item_mb, ratio,
-                decomp_stats.median, decomp_stats.rsd_pct,
-                comp_stats.median, comp_stats.rsd_pct
+                decomp_stats.median, decomp_stats.mad_pct,
+                comp_stats.median, comp_stats.mad_pct
             );
 
             report.silesia_files.push(FileBenchmarkResult {
@@ -169,8 +185,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 comp_bytes: item.compressed.len(),
                 decomp_mb_s: decomp_stats.median,
                 decomp_rsd: decomp_stats.rsd_pct,
+                decomp_mad: decomp_stats.mad_pct,
                 comp_mb_s: comp_stats.median,
                 comp_rsd: comp_stats.rsd_pct,
+                comp_mad: comp_stats.mad_pct,
+                decomp_times,
+                comp_times,
             });
         }
 
@@ -183,12 +203,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
         if silesia_items.len() > 1 {
             println!(
-                "\nSilesia Aggregate Decompression: Median {:.2} MB/s (±{:.1}%)",
-                silesia_agg_decomp_stats.median, silesia_agg_decomp_stats.rsd_pct
+                "\nSilesia Aggregate Decompression: Median {:.2} MB/s (±{:.1}% MAD)",
+                silesia_agg_decomp_stats.median, silesia_agg_decomp_stats.mad_pct
             );
             println!(
-                "Silesia Aggregate Compression:   Median {:.2} MB/s (±{:.1}%)",
-                silesia_agg_comp_stats.median, silesia_agg_comp_stats.rsd_pct
+                "Silesia Aggregate Compression:   Median {:.2} MB/s (±{:.1}% MAD)",
+                silesia_agg_comp_stats.median, silesia_agg_comp_stats.mad_pct
             );
         }
 
@@ -197,8 +217,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             comp_bytes: silesia_comp_total,
             decomp_mb_s: silesia_agg_decomp_stats.median,
             decomp_rsd: silesia_agg_decomp_stats.rsd_pct,
+            decomp_mad: silesia_agg_decomp_stats.mad_pct,
             comp_mb_s: silesia_agg_comp_stats.median,
             comp_rsd: silesia_agg_comp_stats.rsd_pct,
+            comp_mad: silesia_agg_comp_stats.mad_pct,
         };
     }
 

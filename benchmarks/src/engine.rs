@@ -4,7 +4,24 @@ use std::time::Instant;
 use crate::dataset::DatasetItem;
 use crate::stats::{compute_stats, Stats};
 
-pub const WARMUP_ITERATIONS: usize = 3;
+pub const WARMUP_ITERATIONS: usize = 5;
+
+/// Pin current thread/process to a specific physical CPU core.
+pub fn pin_to_core(core_id: usize) {
+    #[cfg(target_os = "linux")]
+    unsafe {
+        let mut set: libc::cpu_set_t = std::mem::zeroed();
+        libc::CPU_SET(core_id, &mut set);
+        let ret = libc::sched_setaffinity(0, std::mem::size_of::<libc::cpu_set_t>(), &set);
+        if ret != 0 {
+            eprintln!("Warning: sched_setaffinity failed with code {}", ret);
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = core_id;
+    }
+}
 
 /// Decompress a single bzip2 stream into a caller-provided destination buffer.
 pub fn decompress_bz2_single_into(input: &[u8], out: &mut [u8]) -> Result<usize, String> {

@@ -1,4 +1,4 @@
-//! Statistical analysis module for benchmark timing samples.
+//! Statistical analysis module for benchmark timing samples with robust MAD dispersion.
 
 use serde::{Deserialize, Serialize};
 
@@ -15,6 +15,8 @@ pub struct Stats {
     pub max: f64,
     /// Relative Standard Deviation percentage (RSD %).
     pub rsd_pct: f64,
+    /// Median Absolute Deviation percentage (MAD %).
+    pub mad_pct: f64,
 }
 
 impl Default for Stats {
@@ -25,6 +27,7 @@ impl Default for Stats {
             min: 0.0,
             max: 0.0,
             rsd_pct: 0.0,
+            mad_pct: 0.0,
         }
     }
 }
@@ -61,12 +64,27 @@ pub fn compute_stats(mut samples: Vec<f64>) -> Stats {
         0.0
     };
 
+    // Calculate Median Absolute Deviation (MAD)
+    let mut abs_devs: Vec<f64> = samples.iter().map(|&x| (x - median).abs()).collect();
+    abs_devs.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let mad = if n.is_multiple_of(2) {
+        (abs_devs[n / 2 - 1] + abs_devs[n / 2]) / 2.0
+    } else {
+        abs_devs[n / 2]
+    };
+    let mad_pct = if median > 0.0 {
+        (1.4826 * mad / median) * 100.0
+    } else {
+        0.0
+    };
+
     Stats {
         median,
         mean,
         min,
         max,
         rsd_pct,
+        mad_pct,
     }
 }
 
@@ -82,6 +100,7 @@ mod tests {
         assert_eq!(stats.min, 100.0);
         assert_eq!(stats.max, 300.0);
         assert_eq!(stats.mean, 200.0);
+        assert!(stats.mad_pct > 0.0);
     }
 
     #[test]

@@ -1,12 +1,13 @@
 //! 100% Pure Rust Iso-Thermal Interleaved A/B Benchmark Orchestrator.
 //!
-//! Eliminates Python runtime dependency completely.
-//! Automates git branch switching, one-time binary pre-compilation,
-//! per-file interleaved execution, and typesafe Markdown/JSON report rendering.
+//! Hardened with CPU Core Pinning, LTO Release Profiles,
+//! True Statistical Aggregate Distributions, and Median Absolute Deviation (MAD%).
 
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
+use bzip2_benchmarks::engine::pin_to_core;
+use bzip2_benchmarks::stats::compute_stats;
 use bzip2_benchmarks::{
     render_ab_markdown_report, BenchmarkSuiteReport, DatasetAggregateResult, EnvMetadata,
     SILESIA_FILES,
@@ -80,12 +81,14 @@ fn build_binary_for_ref(lib_dir: &Path, ref_name: &str, binary_name: &str) -> Re
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
+    pin_to_core(2);
+
     let args: Vec<String> = std::env::args().collect();
-    let mut iterations = 5usize;
+    let mut iterations = 20usize;
     let mut i = 1;
     while i < args.len() {
         if args[i] == "--iterations" && i + 1 < args.len() {
-            iterations = args[i + 1].parse().unwrap_or(5);
+            iterations = args[i + 1].parse().unwrap_or(20);
             i += 2;
         } else {
             i += 1;
@@ -102,10 +105,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     println!("Active Target Git Ref: {}", target_ref);
     println!("Baseline Git Ref:      {}", baseline_ref);
+    println!("Benchmark Host Core:   Pinned to Physical Core 2");
 
     // 1. One-Time Build Phase
     println!("\n======================================================================");
-    println!("1. Pre-Building Benchmarks (One-Time Build Phase)");
+    println!("1. Pre-Building Benchmarks (One-Time Build Phase with LTO)");
     println!("======================================================================");
     let baseline_bin = build_binary_for_ref(&lib_dir, baseline_ref, "bench_baseline")?;
     let target_bin = build_binary_for_ref(&lib_dir, &target_ref, "bench_target")?;
@@ -182,48 +186,70 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
-    // Compute exact harmonic aggregate throughput for Silesia Corpus
+    // Compute exact empirical aggregate distribution across all matched iterations (zero hardcoded values)
     let total_uncomp: usize = merged_baseline.silesia_files.iter().map(|f| f.uncomp_bytes).sum();
     let total_comp_b: usize = merged_baseline.silesia_files.iter().map(|f| f.comp_bytes).sum();
     let total_comp_t: usize = merged_target.silesia_files.iter().map(|f| f.comp_bytes).sum();
+    let total_mb = total_uncomp as f64 / 1_000_000.0;
 
-    let base_total_decomp_sec: f64 = merged_baseline
-        .silesia_files
-        .iter()
-        .map(|f| (f.uncomp_bytes as f64 / 1e6) / f.decomp_mb_s)
-        .sum();
-    let tgt_total_decomp_sec: f64 = merged_target
-        .silesia_files
-        .iter()
-        .map(|f| (f.uncomp_bytes as f64 / 1e6) / f.decomp_mb_s)
-        .sum();
+    let mut base_agg_decomp_samples = vec![0.0f64; iterations];
+    let mut base_agg_comp_samples = vec![0.0f64; iterations];
+    let mut tgt_agg_decomp_samples = vec![0.0f64; iterations];
+    let mut tgt_agg_comp_samples = vec![0.0f64; iterations];
 
-    let base_total_comp_sec: f64 = merged_baseline
-        .silesia_files
-        .iter()
-        .map(|f| (f.uncomp_bytes as f64 / 1e6) / f.comp_mb_s)
-        .sum();
-    let tgt_total_comp_sec: f64 = merged_target
-        .silesia_files
-        .iter()
-        .map(|f| (f.uncomp_bytes as f64 / 1e6) / f.comp_mb_s)
-        .sum();
+    for k in 0..iterations {
+        let mut b_decomp_time = 0.0f64;
+        let mut b_comp_time = 0.0f64;
+        let mut t_decomp_time = 0.0f64;
+        let mut t_comp_time = 0.0f64;
+
+        for bf in &merged_baseline.silesia_files {
+            if k < bf.decomp_times.len() {
+                b_decomp_time += bf.decomp_times[k];
+            }
+            if k < bf.comp_times.len() {
+                b_comp_time += bf.comp_times[k];
+            }
+        }
+        for tf in &merged_target.silesia_files {
+            if k < tf.decomp_times.len() {
+                t_decomp_time += tf.decomp_times[k];
+            }
+            if k < tf.comp_times.len() {
+                t_comp_time += tf.comp_times[k];
+            }
+        }
+
+        if b_decomp_time > 0.0 { base_agg_decomp_samples[k] = total_mb / b_decomp_time; }
+        if b_comp_time > 0.0 { base_agg_comp_samples[k] = total_mb / b_comp_time; }
+        if t_decomp_time > 0.0 { tgt_agg_decomp_samples[k] = total_mb / t_decomp_time; }
+        if t_comp_time > 0.0 { tgt_agg_comp_samples[k] = total_mb / t_comp_time; }
+    }
+
+    let b_decomp_agg_stats = compute_stats(base_agg_decomp_samples);
+    let b_comp_agg_stats = compute_stats(base_agg_comp_samples);
+    let t_decomp_agg_stats = compute_stats(tgt_agg_decomp_samples);
+    let t_comp_agg_stats = compute_stats(tgt_agg_comp_samples);
 
     merged_baseline.silesia_aggregate = DatasetAggregateResult {
         uncomp_bytes: total_uncomp,
         comp_bytes: total_comp_b,
-        decomp_mb_s: (total_uncomp as f64 / 1e6) / base_total_decomp_sec,
-        decomp_rsd: 0.5,
-        comp_mb_s: (total_uncomp as f64 / 1e6) / base_total_comp_sec,
-        comp_rsd: 0.5,
+        decomp_mb_s: b_decomp_agg_stats.median,
+        decomp_rsd: b_decomp_agg_stats.rsd_pct,
+        decomp_mad: b_decomp_agg_stats.mad_pct,
+        comp_mb_s: b_comp_agg_stats.median,
+        comp_rsd: b_comp_agg_stats.rsd_pct,
+        comp_mad: b_comp_agg_stats.mad_pct,
     };
     merged_target.silesia_aggregate = DatasetAggregateResult {
         uncomp_bytes: total_uncomp,
         comp_bytes: total_comp_t,
-        decomp_mb_s: (total_uncomp as f64 / 1e6) / tgt_total_decomp_sec,
-        decomp_rsd: 0.5,
-        comp_mb_s: (total_uncomp as f64 / 1e6) / tgt_total_comp_sec,
-        comp_rsd: 0.5,
+        decomp_mb_s: t_decomp_agg_stats.median,
+        decomp_rsd: t_decomp_agg_stats.rsd_pct,
+        decomp_mad: t_decomp_agg_stats.mad_pct,
+        comp_mb_s: t_comp_agg_stats.median,
+        comp_rsd: t_comp_agg_stats.rsd_pct,
+        comp_mad: t_comp_agg_stats.mad_pct,
     };
 
     // Save JSON files
