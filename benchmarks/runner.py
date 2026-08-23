@@ -59,7 +59,37 @@ def run_benchmark_for_ref(ref_target, json_filename, iterations):
     return json.load(open(json_path))
 
 
-def format_ab_report(baseline_json, target_json, target_name):
+def get_env_metadata(iterations, baseline_name, target_name):
+    import platform
+    cpu = "Unknown CPU"
+    if os.path.exists("/proc/cpuinfo"):
+        for line in open("/proc/cpuinfo"):
+            if "model name" in line:
+                cpu = line.split(":", 1)[1].strip()
+                break
+    else:
+        cpu = platform.processor() or "Unknown CPU"
+
+    os_info = f"{platform.system()} {platform.release()} ({platform.machine()})"
+    
+    rustc_ver = "rustc (unknown)"
+    try:
+        res = subprocess.run(["rustc", "--version"], capture_output=True, text=True, check=True)
+        rustc_ver = res.stdout.strip()
+    except Exception:
+        pass
+
+    return {
+        "cpu": cpu,
+        "os": os_info,
+        "rustc": rustc_ver,
+        "iterations": iterations,
+        "baseline": baseline_name,
+        "target": target_name,
+    }
+
+
+def format_ab_report(baseline_json, target_json, target_name, iterations=20):
     base_nex = baseline_json["nexrad"]
     tgt_nex = target_json["nexrad"]
     base_sil = baseline_json["silesia_aggregate"]
@@ -74,8 +104,19 @@ def format_ab_report(baseline_json, target_json, target_name):
         icon = " 🚀" if d > 1.0 else ""
         return f"**{d:+.1f}%{icon}**"
 
+    meta = get_env_metadata(iterations, "origin/main", target_name)
     report = []
     report.append(f"# Benchmark A/B Report: `origin/main` vs `{target_name}`\n")
+    report.append("### Environment & Benchmark Configuration\n")
+    report.append("| Parameter | Value |")
+    report.append("| :--- | :--- |")
+    report.append(f"| **CPU Model** | {meta['cpu']} |")
+    report.append(f"| **OS / Kernel** | {meta['os']} |")
+    report.append(f"| **Rust Toolchain** | `{meta['rustc']}` |")
+    report.append(f"| **Iterations per File** | **{iterations} iterations** |")
+    report.append(f"| **Baseline Ref** | `{meta['baseline']}` |")
+    report.append(f"| **Target Ref** | `{meta['target']}` |\n")
+
     report.append("## 1. Overall Aggregate Throughput\n")
     report.append("| Dataset | Operation | Baseline (`main`) | Target (`" + target_name + "`) | Throughput Delta | Speedup |")
     report.append("| :--- | :--- | :--- | :--- | :--- | :--- |")
@@ -186,7 +227,7 @@ def main():
             # A/B mode
             base_json = run_benchmark_for_ref("origin/main", "ab_baseline_main.json", args.iterations)
             target_json = run_benchmark_for_ref(original_ref, "ab_target.json", args.iterations)
-            report_content = format_ab_report(base_json, target_json, original_ref)
+            report_content = format_ab_report(base_json, target_json, original_ref, args.iterations)
 
         with open(REPORT_MD, "w") as f:
             f.write(report_content)
