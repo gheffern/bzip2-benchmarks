@@ -101,8 +101,7 @@ def format_ab_report(baseline_json, target_json, target_name, iterations=20):
     sil_comp_d = ((tgt_sil["comp_mb_s"] - base_sil["comp_mb_s"]) / base_sil["comp_mb_s"]) * 100
 
     def format_speedup(d):
-        icon = " 🚀" if d > 1.0 else ""
-        return f"**{d:+.1f}%{icon}**"
+        return f"**{d:+.1f}%**"
 
     meta = get_env_metadata(iterations, "origin/main", target_name)
     report = []
@@ -188,8 +187,7 @@ def format_stepped_report(step_results):
             row.append(f"{v:.2f} MB/s")
 
         total_d = ((final_val - base_val) / base_val) * 100
-        icon = "🚀" if total_d > 5.0 else ""
-        row.append(f"**{total_d:+.1f}% {icon}**")
+        row.append(f"**{total_d:+.1f}%**")
         report.append("| " + " | ".join(row) + " |")
 
     return "\n".join(report)
