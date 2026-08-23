@@ -89,11 +89,38 @@ SILESIA_EXPECTED = {
     },
 }
 
-# NOAA NEXRAD Level-2 Radar Base Checksums (AWS S3)
-NEXRAD_BASE_URLS = [
+# 30 Unique NOAA NEXRAD Level-2 Radar Volume Sweeps (AWS S3)
+NEXRAD_URLS = [
     ("https://unidata-nexrad-level2.s3.amazonaws.com/2024/01/01/KTLX/KTLX20240101_000004_V06", "nexrad1", "ed77fa29a3228959b459467f4bbcb0d9", 49924864),
     ("https://unidata-nexrad-level2.s3.amazonaws.com/2024/01/01/KTLX/KTLX20240101_000646_V06", "nexrad2", "f0b97a6d5d31cce1b36eb63ce17771de", 49922432),
     ("https://unidata-nexrad-level2.s3.amazonaws.com/2024/01/01/KTLX/KTLX20240101_001328_V06", "nexrad3", "0463220458fa4afd654b02669f044109", 49922432),
+    ("https://unidata-nexrad-level2.s3.amazonaws.com/2024/01/01/KTLX/KTLX20240101_002014_V06", "nexrad4", "eea610c97c0311782d512f6a79b101d0", 49924864),
+    ("https://unidata-nexrad-level2.s3.amazonaws.com/2024/01/01/KTLX/KTLX20240101_002656_V06", "nexrad5", "2fadfc70a9a6884be8280d8aef2e6dbe", 49922432),
+    ("https://unidata-nexrad-level2.s3.amazonaws.com/2024/01/01/KTLX/KTLX20240101_003339_V06", "nexrad6", "f16025218830244cac26ab2362ebeafb", 49924864),
+    ("https://unidata-nexrad-level2.s3.amazonaws.com/2024/01/01/KTLX/KTLX20240101_004020_V06", "nexrad7", "29bcd13deae6f0a2bc7fc0fe4818bd35", 49922432),
+    ("https://unidata-nexrad-level2.s3.amazonaws.com/2024/01/01/KTLX/KTLX20240101_004707_V06", "nexrad8", "9afd23f1398e9da4972bc8346ef84383", 49922432),
+    ("https://unidata-nexrad-level2.s3.amazonaws.com/2024/01/01/KTLX/KTLX20240101_005349_V06", "nexrad9", "39641b7c66cdb9740eecabbb84744f80", 49924864),
+    ("https://unidata-nexrad-level2.s3.amazonaws.com/2024/01/01/KTLX/KTLX20240101_010031_V06", "nexrad10", "5bb7be7ae2f29aae89f2c36877ed9f8a", 49922432),
+    ("https://unidata-nexrad-level2.s3.amazonaws.com/2024/01/01/KTLX/KTLX20240101_010712_V06", "nexrad11", "3e2a53e6213f7a27c2ef049c279a2af7", 49924864),
+    ("https://unidata-nexrad-level2.s3.amazonaws.com/2024/01/01/KTLX/KTLX20240101_011400_V06", "nexrad12", "7115c633da60a1e36922808008553298", 49922432),
+    ("https://unidata-nexrad-level2.s3.amazonaws.com/2024/01/01/KTLX/KTLX20240101_012042_V06", "nexrad13", "517094e1cad4018b25ad6288d7dbcd63", 49922432),
+    ("https://unidata-nexrad-level2.s3.amazonaws.com/2024/01/01/KTLX/KTLX20240101_012734_V06", "nexrad14", "ab72dc11a87a264f8e3f811410f393ec", 49924864),
+    ("https://unidata-nexrad-level2.s3.amazonaws.com/2024/01/01/KTLX/KTLX20240101_013419_V06", "nexrad15", "68c00cf380ea4280715d2747f69c134f", 49922432),
+    ("https://unidata-nexrad-level2.s3.amazonaws.com/2024/01/01/KTLX/KTLX20240101_014102_V06", "nexrad16", "a104ab95cedabe1d5f6664903411fe76", 49924864),
+    ("https://unidata-nexrad-level2.s3.amazonaws.com/2024/01/01/KTLX/KTLX20240101_014745_V06", "nexrad17", "3b41dfb7c3d839393ddd4cd16851e1b2", 49922432),
+    ("https://unidata-nexrad-level2.s3.amazonaws.com/2024/01/01/KTLX/KTLX20240101_015428_V06", "nexrad18", "c19dd113da3698a52ae19676af6edd3c", 49922432),
+    ("https://unidata-nexrad-level2.s3.amazonaws.com/2024/01/01/KTLX/KTLX20240101_020110_V06", "nexrad19", "2c9be3cb05d02dbc3c638a7a90e0f818", 49924864),
+    ("https://unidata-nexrad-level2.s3.amazonaws.com/2024/01/01/KTLX/KTLX20240101_020758_V06", "nexrad20", "f4c2711eedb347e58bbd0014c24a9d68", 49922432),
+    ("https://unidata-nexrad-level2.s3.amazonaws.com/2024/01/01/KTLX/KTLX20240101_021445_V06", "nexrad21", "bfea4c9fc284eca1e033afd452c040e4", 49924864),
+    ("https://unidata-nexrad-level2.s3.amazonaws.com/2024/01/01/KTLX/KTLX20240101_022132_V06", "nexrad22", "d90d0bc519d3a3931caf2ab81bca8a2a", 49922432),
+    ("https://unidata-nexrad-level2.s3.amazonaws.com/2024/01/01/KTLX/KTLX20240101_022819_V06", "nexrad23", "0c1bfbeaf0e19c1574b81dd7dcec5bd3", 49922432),
+    ("https://unidata-nexrad-level2.s3.amazonaws.com/2024/01/01/KTLX/KTLX20240101_023500_V06", "nexrad24", "a7c837dfa81aec21d10622d1d2f7d908", 49924864),
+    ("https://unidata-nexrad-level2.s3.amazonaws.com/2024/01/01/KTLX/KTLX20240101_024142_V06", "nexrad25", "e21db1fc1f570dde0b4e0a4ecda20c5b", 49922432),
+    ("https://unidata-nexrad-level2.s3.amazonaws.com/2024/01/01/KTLX/KTLX20240101_024825_V06", "nexrad26", "d9a743d923d3b81f06cee327d0062733", 49924864),
+    ("https://unidata-nexrad-level2.s3.amazonaws.com/2024/01/01/KTLX/KTLX20240101_025511_V06", "nexrad27", "e21ec505d15e004b37cc315ec9b42330", 49922432),
+    ("https://unidata-nexrad-level2.s3.amazonaws.com/2024/01/01/KTLX/KTLX20240101_030153_V06", "nexrad28", "52c901078dec8d09d41f6be3a97a992a", 49922432),
+    ("https://unidata-nexrad-level2.s3.amazonaws.com/2024/01/01/KTLX/KTLX20240101_030844_V06", "nexrad29", "6dfd069f661d541cd07eb263d8a5bd37", 49924864),
+    ("https://unidata-nexrad-level2.s3.amazonaws.com/2024/01/01/KTLX/KTLX20240101_031526_V06", "nexrad30", "9e94d7dc5ca723a5e1619e1a1be598f2", 49922432),
 ]
 
 
@@ -186,11 +213,10 @@ def fetch_silesia():
 
 
 def fetch_nexrad():
-    print("\n=== 2. Fetching NOAA NEXRAD Level-2 Radar Data ===")
-    base_payloads = []
+    print("\n=== 2. Fetching NOAA NEXRAD Level-2 Radar Data (30 Unique Volumes) ===")
 
-    for url, base_name, exp_md5, exp_sz in NEXRAD_BASE_URLS:
-        print(f"Downloading {url}...")
+    for url, base_name, exp_md5, exp_sz in NEXRAD_URLS:
+        print(f"Downloading {base_name} ({url.split('/')[-1]})...")
         req = urllib.request.Request(url, headers={"User-Agent": "bzip2-benchmark-suite/1.0"})
         with urllib.request.urlopen(req, timeout=30) as resp:
             data = resp.read()
@@ -204,20 +230,15 @@ def fetch_nexrad():
         if act_sz != exp_sz or act_md5 != exp_md5:
             raise ValueError(f"NEXRAD verification failed for {base_name}: expected {exp_sz}B / {exp_md5}, got {act_sz}B / {act_md5}")
 
-        base_payloads.append((payload, decompressed))
-
-    # Expand to 30 NEXRAD volume files (~1.5 GB uncompressed suite)
-    for i in range(1, 31):
-        payload, decompressed = base_payloads[(i - 1) % len(base_payloads)]
-        comp_path = os.path.join(COMPRESSED_DIR, f"nexrad{i}.bz2")
-        ref_path = os.path.join(REFERENCE_DIR, f"nexrad{i}")
+        comp_path = os.path.join(COMPRESSED_DIR, f"{base_name}.bz2")
+        ref_path = os.path.join(REFERENCE_DIR, base_name)
 
         with open(comp_path, "wb") as f:
             f.write(payload)
         with open(ref_path, "wb") as f:
             f.write(decompressed)
 
-        print(f"  ✓ nexrad{i:<2}.bz2: {len(payload):>8} B -> {len(decompressed):>10} B uncompressed (100% Verified ✓)")
+        print(f"  ✓ {base_name:<9}.bz2: {len(payload):>8} B -> {len(decompressed):>10} B uncompressed (100% Verified ✓)")
 
 
 def verify_all():
