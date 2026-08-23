@@ -13,6 +13,7 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 REPO_ROOT = os.path.dirname(SCRIPT_DIR)
@@ -55,6 +56,8 @@ def run_benchmark_for_ref(ref_target, json_filename, iterations):
         "--json", f"output/{json_filename}"
     ]
     
+    print(f"\nThermal stabilization cool-down (5s pause before {ref_target})...")
+    time.sleep(5)
     subprocess.run(cmd, cwd=SCRIPT_DIR, check=True)
     return json.load(open(json_path))
 
@@ -112,19 +115,29 @@ def format_ab_report(baseline_json, target_json, target_name, iterations=20):
     report.append(f"| **CPU Model** | {meta['cpu']} |")
     report.append(f"| **OS / Kernel** | {meta['os']} |")
     report.append(f"| **Rust Toolchain** | `{meta['rustc']}` |")
-    report.append(f"| **Iterations per File** | **{iterations} iterations** |")
+    report.append(f"| **Iterations per File** | **{iterations} iterations (+ 3 warmup passes)** |")
     report.append(f"| **Baseline Ref** | `{meta['baseline']}` |")
     report.append(f"| **Target Ref** | `{meta['target']}` |\n")
 
-    report.append("## 1. Overall Aggregate Throughput\n")
+    report.append("## 1. Overall Aggregate Throughput (Median)\n")
     report.append("| Dataset | Operation | Baseline (`main`) | Target (`" + target_name + "`) | Throughput Delta | Speedup |")
     report.append("| :--- | :--- | :--- | :--- | :--- | :--- |")
-    report.append(f"| **NEXRAD Radar** | Decompression | {base_nex['decomp_mb_s']:.2f} MB/s | **{tgt_nex['decomp_mb_s']:.2f} MB/s** | {tgt_nex['decomp_mb_s'] - base_nex['decomp_mb_s']:+.2f} MB/s | {format_speedup(nex_decomp_d)} |")
-    report.append(f"| **NEXRAD Radar** | Compression | {base_nex['comp_mb_s']:.2f} MB/s | **{tgt_nex['comp_mb_s']:.2f} MB/s** | {tgt_nex['comp_mb_s'] - base_nex['comp_mb_s']:+.2f} MB/s | {format_speedup(nex_comp_d)} |")
-    report.append(f"| **Silesia Corpus** | Decompression | {base_sil['decomp_mb_s']:.2f} MB/s | **{tgt_sil['decomp_mb_s']:.2f} MB/s** | {tgt_sil['decomp_mb_s'] - base_sil['decomp_mb_s']:+.2f} MB/s | {format_speedup(sil_decomp_d)} |")
-    report.append(f"| **Silesia Corpus** | Compression | {base_sil['comp_mb_s']:.2f} MB/s | **{tgt_sil['comp_mb_s']:.2f} MB/s** | {tgt_sil['comp_mb_s'] - base_sil['comp_mb_s']:+.2f} MB/s | {format_speedup(sil_comp_d)} |")
+    base_nex_d_rsd = f" (±{base_nex.get('decomp_rsd', 0):.1f}%)" if "decomp_rsd" in base_nex else ""
+    tgt_nex_d_rsd = f" (±{tgt_nex.get('decomp_rsd', 0):.1f}%)" if "decomp_rsd" in tgt_nex else ""
+    base_nex_c_rsd = f" (±{base_nex.get('comp_rsd', 0):.1f}%)" if "comp_rsd" in base_nex else ""
+    tgt_nex_c_rsd = f" (±{tgt_nex.get('comp_rsd', 0):.1f}%)" if "comp_rsd" in tgt_nex else ""
 
-    report.append("\n## 2. Silesia Decompression Performance\n")
+    base_sil_d_rsd = f" (±{base_sil.get('decomp_rsd', 0):.1f}%)" if "decomp_rsd" in base_sil else ""
+    tgt_sil_d_rsd = f" (±{tgt_sil.get('decomp_rsd', 0):.1f}%)" if "decomp_rsd" in tgt_sil else ""
+    base_sil_c_rsd = f" (±{base_sil.get('comp_rsd', 0):.1f}%)" if "comp_rsd" in base_sil else ""
+    tgt_sil_c_rsd = f" (±{tgt_sil.get('comp_rsd', 0):.1f}%)" if "comp_rsd" in tgt_sil else ""
+
+    report.append(f"| **NEXRAD Radar** | Decompression | {base_nex['decomp_mb_s']:.2f} MB/s{base_nex_d_rsd} | **{tgt_nex['decomp_mb_s']:.2f} MB/s{tgt_nex_d_rsd}** | {tgt_nex['decomp_mb_s'] - base_nex['decomp_mb_s']:+.2f} MB/s | {format_speedup(nex_decomp_d)} |")
+    report.append(f"| **NEXRAD Radar** | Compression | {base_nex['comp_mb_s']:.2f} MB/s{base_nex_c_rsd} | **{tgt_nex['comp_mb_s']:.2f} MB/s{tgt_nex_c_rsd}** | {tgt_nex['comp_mb_s'] - base_nex['comp_mb_s']:+.2f} MB/s | {format_speedup(nex_comp_d)} |")
+    report.append(f"| **Silesia Corpus** | Decompression | {base_sil['decomp_mb_s']:.2f} MB/s{base_sil_d_rsd} | **{tgt_sil['decomp_mb_s']:.2f} MB/s{tgt_sil_d_rsd}** | {tgt_sil['decomp_mb_s'] - base_sil['decomp_mb_s']:+.2f} MB/s | {format_speedup(sil_decomp_d)} |")
+    report.append(f"| **Silesia Corpus** | Compression | {base_sil['comp_mb_s']:.2f} MB/s{base_sil_c_rsd} | **{tgt_sil['comp_mb_s']:.2f} MB/s{tgt_sil_c_rsd}** | {tgt_sil['comp_mb_s'] - base_sil['comp_mb_s']:+.2f} MB/s | {format_speedup(sil_comp_d)} |")
+
+    report.append("\n## 2. Silesia Decompression Performance (Median)\n")
     report.append("| File Name | Data Type Category | Size | Baseline (`main`) | Target (`" + target_name + "`) | Speedup |")
     report.append("| :--- | :--- | :--- | :--- | :--- | :--- |")
 
@@ -135,9 +148,11 @@ def format_ab_report(baseline_json, target_json, target_name, iterations=20):
         fname = name.replace("silesia_", "")
         sz = tf["uncomp_bytes"] / 1e6
         d_decomp = ((tf["decomp_mb_s"] - bf["decomp_mb_s"]) / bf["decomp_mb_s"]) * 100
-        report.append(f"| **`{fname}`** | {tf['type']} | {sz:.2f} MB | {bf['decomp_mb_s']:.2f} MB/s | **{tf['decomp_mb_s']:.2f} MB/s** | {format_speedup(d_decomp)} |")
+        b_rsd = f" (±{bf.get('decomp_rsd', 0):.1f}%)" if "decomp_rsd" in bf else ""
+        t_rsd = f" (±{tf.get('decomp_rsd', 0):.1f}%)" if "decomp_rsd" in tf else ""
+        report.append(f"| **`{fname}`** | {tf['type']} | {sz:.2f} MB | {bf['decomp_mb_s']:.2f} MB/s{b_rsd} | **{tf['decomp_mb_s']:.2f} MB/s{t_rsd}** | {format_speedup(d_decomp)} |")
 
-    report.append("\n## 3. Silesia Compression Performance\n")
+    report.append("\n## 3. Silesia Compression Performance (Median)\n")
     report.append("| File Name | Data Type Category | Size | Ratio | Baseline (`main`) | Target (`" + target_name + "`) | Speedup |")
     report.append("| :--- | :--- | :--- | :--- | :--- | :--- | :--- |")
 
@@ -148,7 +163,9 @@ def format_ab_report(baseline_json, target_json, target_name, iterations=20):
         sz = tf["uncomp_bytes"] / 1e6
         ratio = (tf["comp_bytes"] / tf["uncomp_bytes"]) * 100
         d_comp = ((tf["comp_mb_s"] - bf["comp_mb_s"]) / bf["comp_mb_s"]) * 100
-        report.append(f"| **`{fname}`** | {tf['type']} | {sz:.2f} MB | {ratio:.2f}% | {bf['comp_mb_s']:.2f} MB/s | **{tf['comp_mb_s']:.2f} MB/s** | {format_speedup(d_comp)} |")
+        b_rsd = f" (±{bf.get('comp_rsd', 0):.1f}%)" if "comp_rsd" in bf else ""
+        t_rsd = f" (±{tf.get('comp_rsd', 0):.1f}%)" if "comp_rsd" in tf else ""
+        report.append(f"| **`{fname}`** | {tf['type']} | {sz:.2f} MB | {ratio:.2f}% | {bf['comp_mb_s']:.2f} MB/s{b_rsd} | **{tf['comp_mb_s']:.2f} MB/s{t_rsd}** | {format_speedup(d_comp)} |")
 
     return "\n".join(report)
 
