@@ -86,10 +86,6 @@ if ! command -v cargo &>/dev/null; then
     exit 1
 fi
 
-# 4. Invoke benchmark runner
-RUNNER_ARGS=("--iterations" "${ITERATIONS}")
-if [ "$STEPPED" = true ]; then
-    RUNNER_ARGS+=("--stepped")
-fi
-
-python3 "${BENCH_DIR}/runner.py" "${RUNNER_ARGS[@]}"
+# 4. Invoke 100% pure Rust iso-thermal interleaved benchmark orchestrator
+cd "${BENCH_DIR}"
+cargo run --release --bin bench_ab -- --iterations "${ITERATIONS}"
